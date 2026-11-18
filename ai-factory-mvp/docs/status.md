@@ -1,6 +1,6 @@
 # AI Factory — Status do projeto (2026-11-18)
 
-## Fase 2 — em andamento (auth primeiro, sandbox depois)
+## Fase 2 — ENCERRADA com limitações (18/11, LTP-034)
 
 - **Passo 1 concluído 18/11:** Authentication Layer (`app/auth.py`) — chaves
   `afk_<id>_<segredo>`, só hash HMAC-SHA256 guardado, exibidas uma vez,
@@ -110,3 +110,22 @@ pagamentos reais ou deploy sem decisão explícita dele.
 naturais (não decididos): sandbox real, autenticação robusta,
 contabilização real de consumo, preparação comercial — nessa ordem
 provável, mas a escolha é dele.
+
+---
+
+## Encerramento da fase 2 (18/11, LTP-034)
+
+- Passo 1 (auth) aprovado (LTP-029); passo 2 (executor) preparado e
+  publicado (`cb155c4`, 88 testes: 77 passam, 11 Windows-only pulados).
+- Diagnóstico real: Windows 11 Pro build 26300, virtualização
+  desabilitada, sessão sem admin.
+- **Lucas recusou o probe do AppContainer** — é o computador do trabalho,
+  o único que ele tem. Recusa definitiva para esta máquina.
+- Executor: experimental preparado, **sem fronteira de isolamento
+  validada**. Execução arbitrária **BLOQUEADA**. 10 testes adversariais
+  pendentes, bloqueados por falta de ambiente de testes separado.
+- Relatório de encerramento: `docs/phase-2-closure.md`.
+- **Reabrir validação só com:** ambiente separado e descartável,
+  autorizado expressamente pelo Lucas + revisão do script do probe
+  pelo ChatGPT + 10 testes com resultado PASS/FAIL/UNVERIFIED.
+- Fase 3 NÃO iniciada automaticamente.

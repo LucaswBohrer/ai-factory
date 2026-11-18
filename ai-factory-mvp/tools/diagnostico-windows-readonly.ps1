@@ -112,3 +112,5 @@ try {
 
 Write-Output ''
 Write-Output '=== Fim do diagnóstico — nada foi instalado, habilitado ou alterado ==='
+Write-Output ''
+Read-Host 'Pressione ENTER para fechar esta janela'
