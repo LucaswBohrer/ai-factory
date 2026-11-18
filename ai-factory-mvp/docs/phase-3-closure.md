@@ -120,5 +120,5 @@ Ran 159 tests — OK (skipped=11)
 - Phase 3 architecture rev 2: `399a34d`
 - **Phase 3 build 1: `42a2bec` (154 tests)**
 - **Phase 3 blocker fix: `80aa30e` (159 tests)**
-- This closure document: published in the commit after `80aa30e`
-  (commit SHA to be recorded here on publish).
+- This closure document: published in commit `1d5c963`
+  (Phase 3 closure: LTP-044 + `docs/phase-3-closure.md`).
