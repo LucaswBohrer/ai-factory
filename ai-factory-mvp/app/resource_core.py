@@ -60,6 +60,31 @@ class ResourceCore:
             f" balance now {int(user['credits_balance']) - amount}")
         return True
 
+    def refund(self, owner: str, amount: int, reason: str,
+               agent_id: str | None = None) -> None:
+        """Credit back a previous charge (e.g. an execution refused
+        by the isolation gate after charging). Admin was never
+        charged, so a refund for the admin is only an audit entry."""
+        if amount < 0:
+            raise ValueError("refund amount must be >= 0")
+        if self.is_admin(owner):
+            self.store.append_audit(
+                owner, "credit_bypass",
+                agent_id or "",
+                f"admin bypass: refund of {amount} credits is a no-op "
+                f"({reason})")
+            if agent_id:
+                self.store.add_agent_credits_used(agent_id, -amount)
+            return
+        user = self.store.ensure_user(owner)
+        self.store.set_balance(owner, int(user["credits_balance"]) + amount)
+        if agent_id:
+            self.store.add_agent_credits_used(agent_id, -amount)
+        self.store.append_audit(
+            owner, "credit_refund", agent_id or "",
+            f"refunded {amount} credits ({reason});"
+            f" balance now {int(user['credits_balance']) + amount}")
+
     def check_agent_credit_limit(self, agent: dict, additional: int) -> bool:
         return int(agent["credits_used"]) + additional <= int(agent["max_credits"])
 

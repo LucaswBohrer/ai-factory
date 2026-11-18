@@ -10,8 +10,26 @@
   sandbox; combinação demonstrável é AppContainer/LPAC + token restrito
   + Job Object, a verificar na máquina real. Executor ainda NÃO
   implementado — execução continua simulada.
-- **Próximo:** passo 2 (executor isolado), pendente da revisão da
-  LTP-028 pelo ChatGPT.
+- **Próximo:** passo 2 (executor isolado). **LTP-029 recebida 18/11 15:05
+  (ChatGPT): passo 1 APROVADO com ressalvas** — segredo no banco só em
+  ambiente local controlado; biblioteca não é fronteira de autenticação.
+  Diagnóstico read-only pronto em `tools/diagnostico-windows-readonly.ps1`
+  (só leitura, nada instalado/habilitado/alterado); LTP-030 enviada com o
+  aceite e o aviso honesto de que o probe funcional do AppContainer cria
+  perfil temporário e precisa de autorização separada. Aguardando o
+  resultado do diagnóstico na máquina real do Lucas. Execução arbitrária
+  continua DESABILITADA até o isolamento ser demonstrado.
+- **Passo 2 concluído 18/11 (preparação, NÃO habilitado):** executor
+  isolado (`app/executor.py`) + supervisor em
+  `Control.execute_isolated` (sem comando de CLI para execução
+  arbitrária) + 10 testes adversariais (LTP-029 §5). Testes:
+  **88 no total (77 verdes + 11 só-Windows skipped)** — baseline
+  de 55 intacto, nenhuma asserção enfraquecida. O launcher Windows
+  (ctypes: AppContainer + token restrito + Job Object) nunca rodou
+  no Windows; os testes adversariais só passam na máquina real do
+  Lucas. Próximo: diagnóstico read-only + probe funcional do
+  AppContainer (cria perfil temporário — precisa de autorização
+  separada, LTP-030) + testes adversariais no Windows real.
 
 ## Baseline aprovado
 

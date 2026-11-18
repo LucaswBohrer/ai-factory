@@ -53,25 +53,35 @@ Nothing here is hidden.
    is only as strong as key storage (see 5) and the library API's
    raw actor parameter (see 4).
 
-7. **Escape da sandbox (sandbox escape).** NOT YET APPLICABLE — there
-   is no executor and arbitrary code execution stays DISABLED.
-   Becomes the top risk the moment step 2 builds an executor; see
-   `docs/windows-isolation-matrix.md` for the honest assessment
-   (subprocess alone is not a sandbox).
+7. **Escape da sandbox (sandbox escape).** STILL NOT APPLICABLE —
+   there is no enabled executor and arbitrary code execution stays
+   DISABLED. Step 2 prepared the executor code
+   (`app/executor.py`) and the 10 adversarial tests, but the
+   Windows launcher has NEVER run on Windows and the adversarial
+   tests SKIP on Linux. The risk becomes real the moment the
+   executor is enabled on a Windows machine; it must only be
+   enabled after the adversarial tests PASS there.
 
 8. **Esgotamento de recursos (resource exhaustion).** Partially
    mitigated today: execution is simulated, capped at 5 min / 2
-   concurrent, and the 3-active-agents cap bounds creation. Real
-   protection needs Job Object limits in the step-2 executor; until
-   then a flood of CLI calls is bounded only by credits and caps,
-   not by OS resource limits.
+   concurrent, and the 3-active-agents cap bounds creation. The
+   step-2 executor defines Job Object limits (memory/CPU/process
+   caps, `KILL_ON_JOB_CLOSE`) and the supervisor enforces timeout
+   + output cap — but those limits are only demonstrated by the
+   unsafe-dev tests on Linux (timeout kill, output cap) and the
+   Windows adversarial tests (memory/process/timeout), which are
+   still skipped. Until the Windows tests pass, a flood of CLI
+   calls is bounded only by credits and caps, not by OS resource
+   limits.
 
 9. **Falsa sensação de isolamento (false sense of isolation).**
    Documented explicitly: the matrix (`docs/windows-isolation-matrix.md`)
    states a subprocess + Job Object is a resource-limited launcher,
    not a sandbox, and that arbitrary code execution stays disabled
    until AppContainer + restricted token + Job Object isolation is
-   *demonstrated* on the real Windows machine.
+   *demonstrated* on the real Windows machine. Step 2 keeps this
+   honest: the Windows tests SKIP on Linux (never pass by
+   simulation) and the executor fails closed everywhere else.
 
 ## Remaining — confirmed / known by design
 
@@ -82,11 +92,32 @@ Nothing here is hidden.
     A production secret must live outside the DB (env var / secret
     manager). No key expiry in step 1; revoke instead.
 
-11. **No real sandbox.** "Isolation" is logical only (minimum
-    permissions + limits). No Docker / subprocess isolation, no
-    OS-level sandbox. Execution is simulated, so a malicious agent
-    definition cannot do much — but that is not a sandbox proof.
-    See the Windows isolation matrix for the step-2 plan.
+11. **No real sandbox (executor prepared, not enabled).**
+    "Isolation" is logical only (minimum permissions + limits).
+    Step 2 prepared `app/executor.py` (AppContainer/LPAC +
+    restricted token + Job Object, via ctypes) and the 10
+    adversarial tests, but the Windows launcher has never run on
+    Windows and the tests SKIP on Linux. No Docker / subprocess
+    isolation is claimed. Execution of agent payloads is only
+    possible through `Control.execute_isolated` (library, no CLI)
+    and is REFUSED on any host without AppContainer — except the
+    explicitly unsafe dev mode (see 18). Arbitrary code execution
+    stays DISABLED until the adversarial tests pass on Lucas's
+    real Windows machine.
+
+18. **Unsafe dev mode (`AI_FACTORY_UNSAFE_DEV=1`).** The executor
+    has an explicitly-named plain-subprocess path, disabled by
+    default, requiring BOTH `unsafe_dev=True` AND the env flag
+    `AI_FACTORY_UNSAFE_DEV=1`. It runs the payload with the
+    supervisor's own rights — it CAN read the supervisor's files
+    and is NOT a sandbox. It exists only so supervisor logic
+    (timeout/kill, output cap, env scrubbing) can be tested on
+    Linux. Every unsafe run logs a WARNING and writes an audit
+    entry with `unsafe_dev=True`. Risk: anyone who can set the
+    env flag AND call the library can run unisolated code — that
+    is local-access trust, same as the DB file itself. Never
+    enable it on a machine with other users' data, never present
+    it as isolation.
 
 12. **No real token counting.** `real_api_cost` is only a meter; no
     provider is connected, no token counting per model exists.

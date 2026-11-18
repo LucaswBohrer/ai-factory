@@ -230,6 +230,14 @@ class Store:
             " WHERE id = ?", (_now(), exec_id))
         self.conn.commit()
 
+    def fail_execution(self, exec_id: str, status: str = "refused") -> None:
+        """Mark an execution record as refused/failed instead of
+        finished (e.g. the isolation gate refused the run)."""
+        self.conn.execute(
+            "UPDATE executions SET status = ?, ended_at = ?"
+            " WHERE id = ?", (status, _now(), exec_id))
+        self.conn.commit()
+
     def count_running_executions(self) -> int:
         row = self.conn.execute(
             "SELECT COUNT(*) AS n FROM executions WHERE status = 'running'"

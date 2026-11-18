@@ -1,5 +1,79 @@
 # Containment evidence — MVP, 2026-11-18
 
+## Phase 2, step 2 (LTP-029) — Isolated Executor (prepared, NOT enabled)
+
+Verified on this VM (Linux). Test command:
+
+```
+$ cd ~/workspace/ai-factory-mvp && python3 -m unittest discover -s tests
+Ran 88 tests in 1.7s — OK (skipped=11)
+```
+
+88 tests: the 55 baseline (unchanged, all green — no assertion
+weakened) + 33 new in `tests/test_executor_phase2.py` (22 run here,
+11 Windows-only skipped). Exact counts: 77 passed, 11 skipped.
+
+### What is PROVEN here (Linux, platform-independent)
+
+| Test | Result |
+|---|---|
+| `test_available_is_false_on_linux` | Pass — `available()` is `(False, ...)` on Linux |
+| `test_execute_isolated_refused_by_default` | Pass — `IsolationRefused`, no charge, no execution record |
+| `test_unsafe_dev_requires_env_flag` / `test_unsafe_dev_requires_argument` / `test_unsafe_dev_env_value_must_be_exactly_1` | Pass — the unsafe path needs BOTH `unsafe_dev=True` AND `AI_FACTORY_UNSAFE_DEV=1` |
+| `test_unsafe_run_returns_output_and_is_flagged` | Pass — output returned, `isolated=False`, `unsafe_dev=True`, cost 1 |
+| `test_unsafe_run_charges_and_audits` | Pass — balance 90 → 89, audit entry marks `unsafe_dev=True` |
+| `test_timeout_kills_worker` | Pass — 30s sleep, 1s timeout → status `timeout`, wall < 10s |
+| `test_output_cap_truncates` | Pass — 100 KB printed, 1 KiB cap → truncated with marker |
+| `test_env_scrubbing_hides_secrets` | Pass — `AI_FACTORY_API_KEY`, `AI_FACTORY_DB`, `MY_SUPER_SECRET` absent from worker output |
+| `test_unsafe_run_logs_warning` | Pass — `UNSAFE DEV` warning logged on every unsafe run |
+| `test_worker_exit_code_nonzero_is_failed` | Pass — exit 3 → status `failed` |
+| `test_work_dir_is_cleaned_up` | Pass — no leftover run dirs |
+| `test_payload_validation` / `test_limits_validation` | Pass — empty/oversized payloads, out-of-range limits rejected before charging |
+| `test_non_owner_cannot_execute_isolated` / `test_agent_without_execute_limited_cannot_run` / `test_unknown_agent_for_non_admin` / `test_kill_switch_blocks_isolated_execution` | Pass — authorization mirrors `execute_agent` |
+| `test_refund_when_supervisor_refuses_after_charging` | Pass — simulated launcher failure → charge refunded (balance back to 90), execution record `refused`, audit `execute_refused` |
+| `test_no_cli_command_exposes_arbitrary_execution` | Pass — `execute-isolated` is not a CLI command (argparse exit 2) |
+| `test_full_regression_existing_suite` | Pass — 55 pre-existing tests re-run in-process, all green |
+
+One real bug was found by these tests and fixed in this step:
+a supervisor exception after `start_execution` left the execution
+record "running" forever, poisoning the concurrency cap
+(`test_payload_validation` hit "concurrent execution limit reached
+(2)" on its third invalid payload). Fix: payload validation now
+happens before charging, and any supervisor exception fails the
+record + refunds the charge (`ResourceCore.refund`,
+`Store.fail_execution`).
+
+### What is EXPLICITLY NOT validated (Windows-only, skipped here)
+
+The 11 tests in `TestExecutorWindowsAdversarial` — the 10
+adversarial attempts from LTP-029 §5 plus the probe gate test —
+SKIP on Linux with reason "requires Windows AppContainer — not
+validated". A skip is NOT a pass. They must run and pass on Lucas's
+real Windows machine before ANY isolation claim is made:
+
+1. read files outside the work dir, 2. access the main DB,
+3. read sensitive env vars, 4. open a network connection,
+5. spawn child processes outside the limits, 6. excessive memory,
+7. survive past the timeout, 8. modify backend files,
+9. access the supervisor's identity, 10. escape the AppContainer.
+
+Also NOT validated: the Windows launcher code itself
+(`_WindowsIsolatedLauncher` in `app/executor.py`, ctypes bindings
+included) has never run on Windows. Its `probe()` only checks API
+presence; the adversarial tests are the demonstration.
+
+### Diagnostic (read-only, for Lucas's machine)
+
+`tools/diagnostico-windows-readonly.ps1` (already sent in LTP-030)
++ `docs/windows-diagnostic.md`: prints one line per check
+(Disponível / Disponível com restrições / Não disponível /
+Não verificado) for version, edition, arch, RAM/CPU, AppContainer
+API, LPAC API, restricted token API, Job Objects API,
+virtualization, Windows Sandbox, Hyper-V, admin session, Python.
+Changes nothing; creates no AppContainer profile (that needs
+separate authorization — LTP-030). Must be run on the real machine
+before the executor tests are trusted.
+
 ## Phase 2, step 1 (LTP-026/027) — Authentication Layer
 
 Verified on this VM. Test command:
