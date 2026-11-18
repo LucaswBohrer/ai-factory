@@ -78,13 +78,14 @@ rejeita `admin`, `self_modify`, `self_modify_permissions`, `create_agent`
 - Sem microsserviços (backend único modular).
 - Sem geração de agentes por LLM (só templates).
 - Sem execução real de ferramentas — a execução é simulada e limitada.
-- Sem deploy, sem repo, sem tocar NEXUS / JARVIS / nenhum outro projeto.
+- Sem deploy, sem tocar NEXUS / JARVIS / nenhum outro projeto.
+  Repo público: https://github.com/LucaswBohrer/ai-factory
 
 ## Como rodar
 
 ```bash
 cd ~/workspace/ai-factory-mvp
-python3 -m unittest discover -s tests -v   # testes (154: 143 verdes + 11 só-Windows skipped)
+python3 -m unittest discover -s tests -v   # testes (159: 148 verdes + 11 só-Windows skipped)
 
 # Autenticação (fase 2, passo 1): bootstrap cria a primeira chave
 # (lucas, admin) — guarde-a, ela só é mostrada uma vez.
@@ -128,7 +129,7 @@ tests/test_mvp.py   31 testes (unittest, stdlib)
 tests/test_isolation_ltp022.py   10 testes de isolamento (LTP-022)
 tests/test_auth_phase2.py        14 testes de autenticação (fase 2, passo 1)
 tests/test_executor_phase2.py    33 testes do executor (fase 2, passo 2; 11 só-Windows)
-tests/test_auditor_phase3.py     66 testes do Auditor global (fase 3)
+tests/test_auditor_phase3.py     71 testes do Auditor global (fase 3: 66 + 5 de identidade dos findings)
 tools/diagnostico-windows-readonly.ps1  diagnóstico read-only do Windows (fase 2, passo 2)
 docs/windows-isolation-matrix.md  matriz de isolamento Windows (fase 2)
 docs/windows-diagnostic.md        como rodar o diagnóstico e ler o resultado
@@ -137,9 +138,10 @@ docs/auditor-architecture.md     arquitetura detalhada do Auditor global (fase 3
 
 ## Testes
 
-`python3 -m unittest discover -s tests -v` — 154 testes em 2026-11-18
-(143 verdes + 11 skipped): 88 do baseline (31 MVP + 10 isolamento +
-14 autenticação + 33 executor) + 66 do Auditor global (fase 3). Os 11
+`python3 -m unittest discover -s tests -v` — 159 testes em 2026-11-18
+(148 verdes + 11 skipped): 88 do baseline (31 MVP + 10 isolamento +
+14 autenticação + 33 executor) + 71 do Auditor global (fase 3: 66 +
+5 de identidade dos findings, LTP-042 → LTP-043). Os 11
 skipped são os testes adversariais só-Windows (LTP-029 §5) — eles
 pulam no Linux com "requires Windows AppContainer — not validated" e
 SÓ passam no Windows real. Um skip não é um pass. Cobrem: profundidade,
@@ -173,5 +175,9 @@ sem comando de CLI para execução arbitrária).
   — fora do escopo da fase 2, passo 1. O segredo do servidor vive na
   tabela `meta` do próprio banco (limitação documentada); chaves não
   expiram — revogue-as.
-- Validação no Windows / por Lucas — pendente; este MVP só foi testado
-  nesta VM (testes + smoke test de CLI).
+- Validação no Windows — diagnóstico read-only rodado na máquina real
+  do Lucas em 2026-11-18 (Windows 11 Pro, build 26300; ver
+  `docs/windows-diagnostic-result-2026-11-18.md`); o probe funcional do
+  AppContainer foi recusado por ele — é o computador do trabalho, o
+  único que ele tem — e a recusa é definitiva para essa máquina. O MVP
+  só foi testado nesta VM (testes + smoke test de CLI).
