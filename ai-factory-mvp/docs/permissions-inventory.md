@@ -1,6 +1,33 @@
 # Permissions inventory — as implemented (MVP, 2026-11-18)
 
-Source of truth: `app/config.py`.
+Source of truth: `app/config.py` (agent permissions) and `app/auth.py`
+(user authentication, Phase 2 step 1).
+
+## Authentication (Phase 2, step 1 — LTP-026/027)
+
+Identity comes from a validated API key, never from a client-supplied
+`--actor`. Every CLI command except `bootstrap` requires `--api-key`
+(or env `AI_FACTORY_API_KEY`).
+
+- Key format: `afk_<public_id>_<secret>` — public_id 12 hex chars,
+  secret 64 hex chars (32 bytes entropy, `secrets` module).
+- Stored: public_id + HMAC-SHA256 hash of the secret only, HMAC key =
+  per-database server secret (meta table — local-MVP limitation, see
+  `known-vulnerabilities.md`). Raw key never stored, logged, or shown
+  again after creation. Keys shown only once.
+- Revocation is immediate; revoked keys fail authentication.
+- Failures are generic (`authentication failed`) for missing,
+  malformed, unknown, revoked, or mismatched keys — no existence leak.
+- A supplied `--actor` must match the key's owner; a mismatch fails
+  authentication (forgery rejected, not trusted).
+- Admin = only `lucas`, assigned server-side from the key's owner.
+- Bootstrap: the first lucas key is created by an explicit local
+  `bootstrap` command that needs no key (local access is the trust
+  anchor); once any key exists, bootstrap refuses and only an
+  authenticated admin creates keys (`create-key`).
+- Residual: the library API (`Control`/`Factory`/`Auditor`) still
+  takes a plain actor string — the "actor comes from a validated key"
+  guarantee holds at the CLI boundary only.
 
 ## Allowed permissions (agents may hold)
 
@@ -29,7 +56,7 @@ outside the allowlist.
 | Toggle kill switch | Yes, only Lucas | No — `PermissionError` | No |
 | Suspend / kill agent | Yes | Yes (own agents) | No — `PermissionError` |
 | Execute agent | Yes (subject to agent perms; logged as `admin_execute` when it is another user's agent) | Yes (subject to agent perms) | No — `PermissionError`, nothing charged, no execution record (fixed build 2, LTP-022) |
-| List agents `--owner X` | Yes, any owner | Yes, only own (`--owner` must match `--actor`) | No — returns `[]`, existence not revealed |
+| List agents `--owner X` | Yes, any owner | Yes, only own (`--owner` must match the authenticated key owner) | No — returns `[]`, existence not revealed |
 | List agents (no filter) | Yes, all agents | No — returns `[]` | No — returns `[]` |
 | Audit agent | Yes (costs 1 credit, or bypass logged) | Yes (costs 1 credit) | No — `ValueError: unknown agent`, same as nonexistent id; no charge, no log entry |
 | Read audit log | Yes, all entries | Yes, only own entries (authored, or targeting own agents) | No — only own entries; other users' entries never shown |

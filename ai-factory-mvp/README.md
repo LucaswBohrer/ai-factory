@@ -21,6 +21,12 @@ sem chamadas a API de LLM no MVP.
   Analisa config, permissões, riscos, ciclos de execução e consumo de um
   agente e devolve achados com severidade `info` / `warning` / `critical`.
   Nunca modifica o agente auditado (verificado por teste).
+- **Authentication Layer** (`app/auth.py`, fase 2 passo 1) — API keys
+  `afk_<public_id>_<secret>`, armazenadas só como hash HMAC-SHA256,
+  mostradas uma única vez, revogáveis. A CLI resolve o ator a partir
+  da chave validada — nunca de um `--actor` fornecido pelo cliente
+  (um `--actor` divergente é rejeitado como falsificação). Admin só
+  o Lucas, atribuído no servidor a partir da chave.
 
 ## Limites de contenção (impostos em código, com testes)
 
@@ -59,17 +65,25 @@ rejeita `admin`, `self_modify`, `self_modify_permissions`, `create_agent`
 
 ```bash
 cd ~/workspace/ai-factory-mvp
-python3 -m unittest discover -s tests -v   # testes
+python3 -m unittest discover -s tests -v   # testes (55, todos verdes)
+
+# Autenticação (fase 2, passo 1): bootstrap cria a primeira chave
+# (lucas, admin) — guarde-a, ela só é mostrada uma vez.
+python3 -m app.cli bootstrap
+export AI_FACTORY_API_KEY='<chave-do-lucas>'   # ou --api-key em cada comando
+python3 -m app.cli create-key --owner alice    # só admin; mostra a chave 1x
+python3 -m app.cli list-keys
+python3 -m app.cli revoke-key --id <public-id> # só admin
 
 # CLI (DB padrão: ./data.db; override com AI_FACTORY_DB ou --db)
 python3 -m app.cli create-agent --owner alice --name helper \
     --kind summarizer --approve
 python3 -m app.cli list-agents [--owner alice]
-python3 -m app.cli audit-agent --id <agent-id> --actor lucas
+python3 -m app.cli audit-agent --id <agent-id>
 python3 -m app.cli credits [--owner alice]
-python3 -m app.cli kill-switch on|off --actor lucas
+python3 -m app.cli kill-switch on|off
 python3 -m app.cli list-audit-log [--limit 20]
-python3 -m app.cli execute --id <agent-id> --actor alice --minutes 2
+python3 -m app.cli execute --id <agent-id> --minutes 2
 ```
 
 ## Layout
@@ -77,32 +91,43 @@ python3 -m app.cli execute --id <agent-id> --actor alice --minutes 2
 ```
 app/
   config.py         limites, custos, allowlists, templates
-  store.py          SQLite (users, agents, executions, audit_log, meta)
+  store.py          SQLite (users, agents, executions, audit_log, meta, api_keys)
   resource_core.py  créditos + custo real de API (separado)
   control.py        registro, kill switch, audit log, execução
   factory.py        criação por template + validação + limites
   auditor.py        Agent Auditor (somente leitura)
-  cli.py            CLI
+  auth.py           API keys (HMAC, só hash armazenado, revogação)
+  cli.py            CLI (ator resolvido da chave validada)
 tests/test_mvp.py   31 testes (unittest, stdlib)
+tests/test_isolation_ltp022.py   10 testes de isolamento (LTP-022)
+tests/test_auth_phase2.py        14 testes de autenticação (fase 2, passo 1)
+docs/windows-isolation-matrix.md  matriz de isolamento Windows (fase 2)
 ```
 
 ## Testes
 
-`python3 -m unittest discover -s tests -v` — 31 testes, todos verdes
-em 2026-11-18 (ver relatório de entrega). Cobrem: profundidade,
+`python3 -m unittest discover -s tests -v` — 55 testes, todos verdes
+em 2026-11-18 (41 do MVP + 14 de autenticação). Cobrem: profundidade,
 teto de 3 ativos/usuário, dedução de créditos + bypass do Lucas
 logado, kill switch bloqueando criação/execução, auditor sinalizando
 permissão arriscada, audit log append-only (trigger), Factory
-rejeitando self-modify, aprovação humana obrigatória, e limites de
-execução (5 min, 2 simultâneas).
+rejeitando self-modify, aprovação humana obrigatória, limites de
+execução (5 min, 2 simultâneas), e autenticação (chave mostrada 1x e
+nunca armazenada em claro, só hash, revogação imediata, ator forjado
+rejeitado, operações só de admin).
 
 ## Não validado / fora de escopo
 
-- Sandbox real (Docker/subprocesso isolado) — no MVP, "isolamento" é
-  lógico (permissões mínimas + limites), não um sandbox de SO.
+- Sandbox real (executor isolado) — passo 2 da fase 2, ainda não
+  implementado. A matriz em `docs/windows-isolation-matrix.md`
+  conclui: subprocesso sozinho não é sandbox; a combinação a
+  demonstrar é AppContainer + restricted token + Job Object, e
+  execução de código arbitrário continua DESABILITADA até lá.
 - Contagem real de tokens por provedor — o campo `real_api_cost` existe
   e é registrado, mas nenhum provedor real está ligado.
-- Multi-tenant de verdade, antifraude de créditos (farming de contas),
-  autenticação de usuários — fora do MVP.
+- Multi-tenant de verdade, antifraude de créditos (farming de contas)
+  — fora do escopo da fase 2, passo 1. O segredo do servidor vive na
+  tabela `meta` do próprio banco (limitação documentada); chaves não
+  expiram — revogue-as.
 - Validação no Windows / por Lucas — pendente; este MVP só foi testado
   nesta VM (testes + smoke test de CLI).

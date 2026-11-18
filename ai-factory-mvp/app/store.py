@@ -54,6 +54,14 @@ CREATE TABLE IF NOT EXISTS audit_log (
     target TEXT NOT NULL DEFAULT '',
     detail TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS api_keys (
+    public_id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    key_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    revoked INTEGER NOT NULL DEFAULT 0,
+    revoked_at TEXT
+);
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -256,3 +264,61 @@ class Store:
             " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, value))
         self.conn.commit()
+
+    # --- API keys (auth layer, Phase 2 step 1) ---
+    # Only public_id + HMAC hash are ever stored. The raw key is never
+    # persisted anywhere. See app/auth.py.
+    def insert_api_key(self, public_id: str, owner: str,
+                       key_hash: str) -> dict:
+        self.conn.execute(
+            "INSERT INTO api_keys (public_id, owner, key_hash, created_at,"
+            " revoked) VALUES (?, ?, ?, ?, 0)",
+            (public_id, owner, key_hash, _now()))
+        self.conn.commit()
+        return self.get_api_key(public_id)
+
+    def get_api_key(self, public_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM api_keys WHERE public_id = ?",
+            (public_id,)).fetchone()
+        return dict(row) if row else None
+
+    def list_api_keys(self, owner: str | None = None) -> list[dict]:
+        if owner is None:
+            rows = self.conn.execute(
+                "SELECT * FROM api_keys ORDER BY created_at").fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM api_keys WHERE owner = ? ORDER BY created_at",
+                (owner,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def count_api_keys(self) -> int:
+        row = self.conn.execute(
+            "SELECT COUNT(*) AS n FROM api_keys").fetchone()
+        return int(row["n"])
+
+    def revoke_api_key(self, public_id: str) -> None:
+        self.conn.execute(
+            "UPDATE api_keys SET revoked = 1, revoked_at = ?"
+            " WHERE public_id = ?",
+            (_now(), public_id))
+        self.conn.commit()
+
+    def get_or_create_server_secret(self) -> str:
+        """Per-database server secret for HMAC key hashing.
+
+        Generated once (32 bytes, hex) and stored in the meta table.
+        LOCAL-MVP LIMITATION: a production server secret must live
+        outside the database (env var / secret manager). Anyone with
+        read access to this DB file can read the secret and forge key
+        hashes — but they would already have the DB itself. Documented
+        in docs/known-vulnerabilities.md.
+        """
+        existing = self.get_meta("server_secret")
+        if existing:
+            return existing
+        import secrets as _secrets
+        secret = _secrets.token_hex(32)
+        self.set_meta("server_secret", secret)
+        return secret

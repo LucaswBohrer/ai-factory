@@ -1,13 +1,25 @@
-"""AI Factory MVP — CLI.
+"""AI Factory MVP — CLI (Phase 2, step 1: authenticated).
+
+Identity comes from a validated API key, never from a client-supplied
+--actor. Every user-acting command requires --api-key (or env
+AI_FACTORY_API_KEY). A --actor flag, if given, must match the key's
+owner or authentication fails — a forged actor is rejected, not trusted.
+
+Bootstrap (first admin key, local access only):
+  python -m app.cli bootstrap
+Key management (authenticated admin only, except list-keys):
+  python -m app.cli create-key --owner alice --api-key <lucas-key>
+  python -m app.cli list-keys --api-key <key>
+  python -m app.cli revoke-key --id <public-id> --api-key <lucas-key>
 
 Usage (from ~/workspace/ai-factory-mvp/):
-  python -m app.cli create-agent --owner alice --name helper --kind summarizer --approve
-  python -m app.cli list-agents [--owner alice] [--actor alice]
-  python -m app.cli audit-agent --id <agent-id> --actor lucas
-  python -m app.cli credits [--owner alice]
-  python -m app.cli kill-switch on|off --actor lucas
-  python -m app.cli list-audit-log [--limit 20] [--actor alice]
-  python -m app.cli execute --id <agent-id> --actor alice --minutes 2
+  python -m app.cli --api-key <key> create-agent --owner alice --name helper --kind summarizer --approve
+  python -m app.cli --api-key <key> list-agents [--owner alice]
+  python -m app.cli --api-key <key> audit-agent --id <agent-id>
+  python -m app.cli --api-key <key> credits [--owner alice]
+  python -m app.cli --api-key <key> kill-switch on|off
+  python -m app.cli --api-key <key> list-audit-log [--limit 20]
+  python -m app.cli --api-key <key> execute --id <agent-id> --minutes 2
 
 Default DB: ./data.db (override with AI_FACTORY_DB). Stdlib only.
 """
@@ -19,6 +31,7 @@ import os
 import sys
 
 from .auditor import Auditor
+from .auth import Auth, AuthenticationFailed
 from .config import ADMIN_USER, AGENT_TEMPLATES
 from .control import Control
 from .factory import Factory
@@ -35,13 +48,48 @@ def _services(db_path: str):
     control = Control(store, resource)
     factory = Factory(store, control, resource)
     auditor = Auditor(store, control, resource)
-    return store, resource, control, factory, auditor
+    auth = Auth(store)
+    return store, resource, control, factory, auditor, auth
+
+
+def _resolve_actor(auth: Auth, args) -> str:
+    """Resolve the actor from the API key. A supplied --actor must
+    match the key's owner; a mismatch is a forgery attempt and fails
+    authentication (generic message, no detail leaked)."""
+    actor = auth.authenticate(getattr(args, "api_key", None))
+    claimed = getattr(args, "actor", None)
+    if claimed is not None and claimed != actor:
+        raise AuthenticationFailed("authentication failed")
+    return actor
+
+
+def _require_owner_or_admin(actor: str, owner: str) -> None:
+    if owner != actor and actor != ADMIN_USER:
+        raise PermissionError(
+            "cannot act on resources owned by another user")
 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="ai-factory-mvp")
     parser.add_argument("--db", default=os.environ.get("AI_FACTORY_DB", DEFAULT_DB))
+    parser.add_argument("--api-key", default=os.environ.get("AI_FACTORY_API_KEY"),
+                        help="API key (or env AI_FACTORY_API_KEY); required "
+                             "for every command except bootstrap")
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("bootstrap",
+                       help="create the first admin (lucas) API key; "
+                            "only when no keys exist yet")
+    p = sub.add_parser("create-key",
+                       help="create an API key (authenticated admin only)")
+    p.add_argument("--owner", required=True)
+
+    p = sub.add_parser("list-keys",
+                       help="list API keys (own keys, or all for admin)")
+
+    p = sub.add_parser("revoke-key",
+                       help="revoke an API key (authenticated admin only)")
+    p.add_argument("--id", required=True, help="public id of the key")
 
     p = sub.add_parser("create-agent")
     p.add_argument("--owner", required=True)
@@ -52,39 +100,69 @@ def main(argv=None) -> int:
     p.add_argument("--permissions", help="comma-separated, subset of allowlist")
     p.add_argument("--approve", action="store_true",
                    help="explicit human approval (required)")
+    p.add_argument("--actor", default=None,
+                   help="deprecated: must match the key owner if given")
 
     p = sub.add_parser("list-agents")
     p.add_argument("--owner")
     p.add_argument("--actor", default=None,
-                   help="requesting user; only own agents are listed "
-                        "unless actor is lucas (admin)")
+                   help="deprecated: must match the key owner if given")
 
     p = sub.add_parser("audit-agent")
     p.add_argument("--id", required=True)
-    p.add_argument("--actor", default=ADMIN_USER)
+    p.add_argument("--actor", default=None,
+                   help="deprecated: must match the key owner if given")
 
     p = sub.add_parser("credits")
-    p.add_argument("--owner", default=ADMIN_USER)
+    p.add_argument("--owner", default=None)
 
     p = sub.add_parser("kill-switch")
     p.add_argument("state", choices=["on", "off"])
-    p.add_argument("--actor", default=ADMIN_USER)
+    p.add_argument("--actor", default=None,
+                   help="deprecated: must match the key owner if given")
 
     p = sub.add_parser("list-audit-log")
     p.add_argument("--limit", type=int, default=20)
     p.add_argument("--actor", default=None,
-                   help="requesting user; only own entries are shown "
-                        "unless actor is lucas (admin)")
+                   help="deprecated: must match the key owner if given")
 
     p = sub.add_parser("execute")
     p.add_argument("--id", required=True)
-    p.add_argument("--actor", required=True)
+    p.add_argument("--actor", default=None,
+                   help="deprecated: must match the key owner if given")
     p.add_argument("--minutes", type=int, default=1)
 
     args = parser.parse_args(argv)
-    store, resource, control, factory, auditor = _services(args.db)
+    store, resource, control, factory, auditor, auth = _services(args.db)
     try:
-        if args.cmd == "create-agent":
+        if args.cmd == "bootstrap":
+            result = auth.bootstrap()
+            print("API key created for lucas (admin).")
+            print("SAVE THIS KEY NOW — it is shown only once and cannot "
+                  "be recovered:")
+            print(result["key"])
+            print(f"public id: {result['public_id']}")
+            return 0
+
+        actor = _resolve_actor(auth, args)
+
+        if args.cmd == "create-key":
+            auth.require_admin(actor)
+            result = auth.create_key(args.owner, actor=actor)
+            print("API key created for "
+                  f"{result['owner']}. SAVE IT NOW — shown only once:")
+            print(result["key"])
+            print(f"public id: {result['public_id']}")
+        elif args.cmd == "list-keys":
+            for k in auth.list_keys(actor):
+                print(f"{k['public_id']}  owner={k['owner']}  "
+                      f"created={k['created_at']}  "
+                      f"revoked={'yes' if k['revoked'] else 'no'}")
+        elif args.cmd == "revoke-key":
+            auth.revoke_key(args.id, actor)
+            print(f"key revoked: {args.id}")
+        elif args.cmd == "create-agent":
+            _require_owner_or_admin(actor, args.owner)
             agent = factory.create_agent(
                 owner=args.owner, name=args.name, kind=args.kind,
                 description=args.description,
@@ -93,28 +171,35 @@ def main(argv=None) -> int:
                 approved_by_human=args.approve)
             print(json.dumps(agent, indent=2, ensure_ascii=False))
         elif args.cmd == "list-agents":
-            for a in control.list_agents(args.owner, actor=args.actor):
+            for a in control.list_agents(args.owner, actor=actor):
                 print(f"{a['id']}  {a['name']}  ({a['kind']})"
                       f"  owner={a['owner']}  status={a['status']}"
                       f"  depth={a['depth']}  credits={a['credits_used']}/{a['max_credits']}")
         elif args.cmd == "audit-agent":
-            print(json.dumps(auditor.audit_agent(args.id, args.actor),
+            print(json.dumps(auditor.audit_agent(args.id, actor),
                              indent=2, ensure_ascii=False))
         elif args.cmd == "credits":
-            bal = resource.balance(args.owner)
+            owner = args.owner if args.owner is not None else actor
+            _require_owner_or_admin(actor, owner)
+            bal = resource.balance(owner)
             print("unlimited (admin, bypass logged)" if bal is None
-                  else f"{args.owner}: {bal} credits")
+                  else f"{owner}: {bal} credits")
         elif args.cmd == "kill-switch":
-            control.set_kill_switch(args.state == "on", args.actor)
+            control.set_kill_switch(args.state == "on", actor)
             print(f"kill switch: {args.state}")
         elif args.cmd == "list-audit-log":
-            for e in control.list_audit_log(args.limit, actor=args.actor):
+            for e in control.list_audit_log(args.limit, actor=actor):
                 print(f"#{e['id']} {e['ts']} {e['actor']} {e['action']}"
                       f" {e['target']} — {e['detail']}")
         elif args.cmd == "execute":
-            print(json.dumps(control.execute_agent(args.id, args.actor, args.minutes),
+            print(json.dumps(control.execute_agent(args.id, actor, args.minutes),
                              indent=2, ensure_ascii=False, default=str))
         return 0
+    except AuthenticationFailed as exc:
+        # Generic message by design: never reveal whether the key id
+        # exists, is revoked, or simply mismatched.
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     except Exception as exc:  # noqa: BLE001 — CLI prints the error plainly
         print(f"error: {exc}", file=sys.stderr)
         return 1

@@ -1,5 +1,50 @@
 # Containment evidence — MVP, 2026-11-18
 
+## Phase 2, step 1 (LTP-026/027) — Authentication Layer
+
+Verified on this VM. Test command:
+
+```
+$ cd ~/workspace/ai-factory-mvp && python3 -m unittest discover -s tests -v
+Ran 55 tests in 0.184s — OK
+```
+
+55 tests: the 41 from build 2 plus 14 new auth tests in
+`tests/test_auth_phase2.py`:
+
+| Test | Result |
+|---|---|
+| `test_key_shown_once_and_never_stored` | Pass — key authenticates; no table (api_keys, meta, audit_log, users, agents) contains the raw key or its secret; listings expose no key/hash/secret |
+| `test_hash_only_storage` | Pass — stored hash == HMAC(server_secret, "id:secret"), != secret; same id + different secret fails |
+| `test_revocation_blocks_immediately` | Pass — revoked key fails at once; re-revoke is idempotent |
+| `test_revoke_requires_admin_and_known_id` | Pass — non-admin revoke fails; unknown id fails; key still valid after failed attempts |
+| `test_wrong_key_fails_with_generic_message` | Pass — missing, malformed, unknown id, wrong secret, tampered key all raise exactly `authentication failed` |
+| `test_bootstrap_rules` | Pass — first bootstrap creates the lucas key; second bootstrap fails; bootstrap for a non-admin fails; non-admin key creation fails |
+| `test_bootstrap_only_for_admin` | Pass |
+| `test_forged_actor_rejected_via_cli` | Pass — bob's key + `--actor alice` → exit 1, `authentication failed`; bob's key alone works as bob (empty list) |
+| `test_missing_key_fails_cli` | Pass — no `--api-key` and no env → exit 1, `authentication failed` |
+| `test_api_key_from_env_var` | Pass — `AI_FACTORY_API_KEY` accepted |
+| `test_admin_only_operations_via_cli` | Pass — kill-switch with bob's key fails; with lucas's key works; create-key with bob's key fails |
+| `test_admin_execute_logged_via_cli` | Pass — lucas executes alice's agent, `admin_execute` in the log |
+| `test_create_agent_owner_scoping_via_cli` | Pass — bob cannot create an agent owned by alice; lucas can create for alice |
+| `test_full_regression_existing_suite` | Pass — 31 + 10 pre-existing tests re-run in-process, all green |
+
+CLI smoke test (temp DB, removed afterwards): `bootstrap` prints the
+lucas key once; `create-key --owner alice` with the lucas key prints
+alice's key once; `list-keys` shows public ids only; `revoke-key`
+makes the key fail immediately; every user command without a key
+fails with the generic message.
+
+Windows isolation matrix: `docs/windows-isolation-matrix.md` —
+researched from documentation only, no system config changed, nothing
+installed, Docker/WSL not assumed. Conclusion: plain subprocess is
+insufficient; Job Objects give resource limits only; restricted tokens
+strip privileges; AppContainer is the only native file/network
+boundary (with a Job Object for resources); Windows Sandbox is
+strongest but needs Pro/Enterprise/Education + virtualization, both
+unverified on Lucas's machine. Arbitrary code execution stays
+DISABLED until the combination is demonstrated on the real machine.
+
 ## Build 2 (LTP-022) — isolation fixes
 
 Verified on this VM. Test command:
@@ -85,9 +130,11 @@ All 31 tests pass. Mapping to the LTP-017 limits:
   they authored or entries targeting their own agents.
 - `suspend_agent` / `kill_agent` by non-owner non-admin → `PermissionError`.
   Enforced (unchanged from build 1).
-- Residual: actor identity is caller-supplied (there is no auth layer in
-  the MVP). The ownership checks assume the actor string was validated
-  upstream — see `known-vulnerabilities.md`.
+- Residual (before Phase 2 step 1): actor identity was caller-supplied
+  (no auth layer). **Fixed at the CLI boundary in Phase 2 step 1:**
+  the actor is now resolved from a validated API key; see the section
+  above. The library API still accepts a raw actor string — see
+  `known-vulnerabilities.md` item 4.
 
 ## Depth semantics — DECIDED in LTP-022 §3 (was open in build 1)
 

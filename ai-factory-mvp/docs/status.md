@@ -1,5 +1,18 @@
 # AI Factory — Status do projeto (2026-11-18)
 
+## Fase 2 — em andamento (auth primeiro, sandbox depois)
+
+- **Passo 1 concluído 18/11:** Authentication Layer (`app/auth.py`) — chaves
+  `afk_<id>_<segredo>`, só hash HMAC-SHA256 guardado, exibidas uma vez,
+  revogação imediata, ator resolvido no servidor a partir da chave.
+  Testes: **55/55 verdes** (41 + 14 novos). Matriz de isolamento Windows
+  em `docs/windows-isolation-matrix.md`: subprocesso sozinho não é
+  sandbox; combinação demonstrável é AppContainer/LPAC + token restrito
+  + Job Object, a verificar na máquina real. Executor ainda NÃO
+  implementado — execução continua simulada.
+- **Próximo:** passo 2 (executor isolado), pendente da revisão da
+  LTP-028 pelo ChatGPT.
+
 ## Baseline aprovado
 
 - **Commit: `da2fe12`** (branch `main`, repo `LucaswBohrer/ai-factory`)

@@ -10,6 +10,16 @@ no LLM calls, SQLite via `sqlite3`.
                   │  credits/kill-switch│
                   │  /execute/list-log  │
                   └──────┬──────────────┘
+                         │  actor resolved here
+                         │  from a validated key
+                         ▼
+                  ┌─────────────────────┐
+                  │  Auth (app/auth.py) │  Phase 2, step 1
+                  │  API keys: HMAC-    │
+                  │  hashed, shown once,│
+                  │  revocable; admin = │
+                  │  lucas, server-side │
+                  └──────┬──────────────┘
                          │
         ┌────────────────┼────────────────┐
         ▼                ▼                ▼
@@ -34,7 +44,10 @@ no LLM calls, SQLite via `sqlite3`.
               │ executions,      │
               │ audit_log        │
               │ (append-only via │
-              │  triggers), meta │
+              │  triggers), meta, │
+              │  api_keys (hash   │
+              │  only, no raw    │
+              │  keys)           │
               └──────────────────┘
 
               ┌──────────────────┐
@@ -50,6 +63,12 @@ no LLM calls, SQLite via `sqlite3`.
               │ (asserted).      │
               └──────────────────┘
 ```
+
+## Data flow — authenticated command (Phase 2, step 1)
+
+CLI → Auth.authenticate(key) → owner resolved server-side (a supplied
+`--actor` must match or auth fails) → Control/Factory/Auditor with the
+resolved owner. No key → generic `authentication failed`, nothing runs.
 
 ## Data flow — create agent
 
@@ -71,5 +90,7 @@ The concurrency cap is enforced on the running-count check at call time.
 
 ## What is NOT in the diagram (deliberately)
 
-No payment gateway, no auth service, no sandbox process, no LLM provider,
+No payment gateway, no sandbox process, no LLM provider,
 no queue, no microservices. All of those are out of the approved MVP scope.
+The sandbox executor is Phase 2, step 2 — see
+`docs/windows-isolation-matrix.md` first.
