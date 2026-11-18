@@ -27,6 +27,16 @@ PAID_PLANS = {
     "pro": 2000,
 }
 
+# --- Phase 3: global Auditor (deterministic, read-only) ---
+# Ruleset version for audit reports (LTP-038 §1, docs/auditor-architecture.md §13).
+AUDIT_RULESET_VERSION = "3.0.0"
+# Minimum interval between successful global audits, in seconds.
+# Enforced in the service layer, not only in the CLI (LTP-038 §3B).
+AUDIT_GLOBAL_MIN_INTERVAL_SECONDS = 60
+# Maximum age of an active API key before it is a policy alert
+# (KEY-002). A policy alert, NOT proof of compromise (LTP-036 §1C).
+AUDIT_KEY_MAX_AGE_DAYS = 180
+
 # --- Agent schema allowlists ---
 ALLOWED_TOOLS = frozenset(
     {"read_config", "read_logs", "summarize", "search_local", "audit"}

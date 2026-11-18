@@ -1,6 +1,6 @@
 # Known vulnerabilities / limitations — MVP, 2026-11-18
 
-Honest list, updated for Phase 2 step 1 (auth layer, LTP-026/027).
+Honest list, updated for Phase 3 (global Auditor, LTP-035..040).
 Nothing here is hidden.
 
 ## FIXED in build 2 (LTP-022)
@@ -82,6 +82,49 @@ Nothing here is hidden.
    *demonstrated* on the real Windows machine. Step 2 keeps this
    honest: the Windows tests SKIP on Linux (never pass by
    simulation) and the executor fails closed everywhere else.
+
+## Phase 3 — global Auditor (LTP-035..040)
+
+19. **The Auditor is NOT a security certifier.** It is a
+    deterministic checker of integrity, consistency and observable
+    security events. A report with all PASS does not mean the system
+    is secure — it means the implemented checks found no violations
+    within the examined scope. That sentence is printed on every
+    report and in the CLI output. 7 checks are UNVERIFIED by design
+    (CREDIT-004, CREDIT-009, LOG-005, SEC-006, KEY-005, PERM-010,
+    SEC-007): no ledger table, no denied-attempt logging, no hash
+    chain, no grant provenance, no agent-status-at-execution-time.
+    The minimal schema changes that would make them verifiable are
+    proposed in `docs/auditor-architecture.md` §7 and are NOT
+    implemented.
+
+20. **audit_reports is append-only by construction + triggers, not
+    tamper-evident.** Same limits as the audit log (item 14):
+    triggers stop UPDATE/DELETE through SQLite, but not direct file
+    edits, trigger drops, fabricated INSERTs, or whole-DB
+    replacement. A fabricated report row is indistinguishable from a
+    genuine one.
+
+21. **Service-layer auth narrows item 4 for the Auditor only.**
+    `AuditService.run_global_audit` authenticates the raw key itself
+    (`Auth.authenticate` + `require_admin`) and never accepts a bare
+    actor string — there is no code path that takes a declared-Lucas
+    identity without a valid key (tested). The rest of the library
+    API (`Control`/`Factory`/per-agent `Auditor`) still accepts a
+    raw actor string; the guarantee holds only where callers
+    authenticate first.
+
+22. **Global audit reads all users' data.** By design and by
+    privilege: only the authenticated admin (Lucas) may run it, and
+    only he may read reports. A non-admin gets the generic failure
+    and no report row or log entry is created for the attempt. No
+    individual-user audit exists in Phase 3.
+
+23. **No report retention policy.** Reports are never deleted by
+    the service. Growth is bounded only by the configurable
+    service-layer rate limit (default 60 s between successful
+    global audits). A flood of admin audits is bounded by that
+    interval, not by a quota.
 
 ## Remaining — confirmed / known by design
 

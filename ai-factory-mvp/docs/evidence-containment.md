@@ -1,5 +1,59 @@
 # Containment evidence — MVP, 2026-11-18
 
+## Phase 3 (LTP-035..040) — Global Auditor (deterministic, read-only)
+
+Verified on this VM (Linux). Test command:
+
+```
+$ cd ~/workspace/ai-factory-mvp && python3 -m unittest discover -s tests
+Ran 154 tests in 1.8s — OK (skipped=11)
+```
+
+154 tests: the 88 baseline (unchanged, all green — no assertion
+weakened) + 66 new in `tests/test_auditor_phase3.py`. Exact counts:
+143 passed, 11 skipped (the 11 are the Windows-only adversarial
+tests from Phase 2 — a skip is not a pass).
+
+### What the Auditor is (and is not)
+
+Deterministic checker of integrity, consistency and observable
+security events — NOT a general security auditor, NOT a certifier.
+38 rules (PERM 10, CREDIT 9, LOG 6, KEY 6, SEC 7), ruleset `3.0.0`,
+every registered rule produces exactly one finding; non-applicable
+→ UNVERIFIED with an explicit reason; `rules_run` = 38. On a clean
+synthetic DB the report is 31 PASS + 7 UNVERIFIED (CREDIT-004,
+CREDIT-009, LOG-005, SEC-006, KEY-005, PERM-010, SEC-007) — a clean
+system still reports what it *cannot* verify. SEC-004 shares
+CREDIT-006's single finding (one check, one finding; 37 distinct
+rule ids in the report).
+
+### What is PROVEN here
+
+| Check | Result |
+|---|---|
+| All 38 rules have individual tests (positive + negative fixtures) | Pass — every rule id asserted in `tests/test_auditor_phase3.py` |
+| CREDIT-005 three scenarios | Pass — no candidate WARN, one candidate WARN (approximate, never "reconciled"), several UNVERIFIED; agent-scoped matching |
+| KEY-002 temporal (fixed clock) | Pass — 179 days PASS, 181 days WARN; same fixture + same evaluated_at ⇒ same finding |
+| Service-layer auth | Pass — bob's key → PermissionError, no report, no log; no key / forged key / revoked key → AuthenticationFailed, no report, no log; old `run_global_audit(store, actor)` signature no longer exists |
+| Isolation | Pass — CLI audit-global as bob → exit 1, no report, no log; audit-report retrieval as bob → exit 1 |
+| Rate limit (60 s, service layer) | Pass — second run within interval refused, no report, exactly one `audit_global_rate_limited` entry; retry after interval succeeds; refusal does not move the clock (refusals never consume the successful-audit quota); a forced evaluation failure does not block an immediate re-audit |
+| Report + event atomicity | Pass — report row and `audit_global` entry written in one transaction; a forced failure of the log INSERT rolls back the report row too |
+| audit_reports triggers | Pass — UPDATE and DELETE on audit_reports abort (IntegrityError) |
+| Read-only proof | Pass — users/agents/executions/api_keys/meta identical before and after a run |
+| CLI | Pass — text output contains the disclaimer verbatim; JSON parses with report_id / ruleset_version / findings / summary |
+| Global audit is free | Pass — no credit_charge / credit_bypass entries from an audit run |
+| No secrets in findings | Pass — no key hash or server secret appears in any finding |
+| Import compatibility | Pass — `from app.auditor import Auditor` still works (re-export); `app/auditor.py` moved to `app/agent_auditor.py`, pure move |
+
+### What is EXPLICITLY NOT validated
+
+- The 7 NOT VERIFIABLE items stay NOT VERIFIABLE (no ledger, no
+  denied-attempt logging, no hash chain, no grant provenance, no
+  agent-status-at-execution-time). They are reported as UNVERIFIED,
+  never faked with heuristics.
+- The Windows adversarial tests (11 skipped) are unchanged from
+  Phase 2 — arbitrary code execution stays DISABLED.
+
 ## Phase 2, step 2 (LTP-029) — Isolated Executor (prepared, NOT enabled)
 
 Verified on this VM (Linux). Test command:

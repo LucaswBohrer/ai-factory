@@ -20,6 +20,9 @@ Usage (from ~/workspace/ai-factory-mvp/):
   python -m app.cli --api-key <key> kill-switch on|off
   python -m app.cli --api-key <key> list-audit-log [--limit 20]
   python -m app.cli --api-key <key> execute --id <agent-id> --minutes 2
+Global audit (Phase 3; authenticated admin only, free):
+  python -m app.cli --api-key <lucas-key> audit-global [--format json|text]
+  python -m app.cli --api-key <lucas-key> audit-report --id <report-id>
 
 Default DB: ./data.db (override with AI_FACTORY_DB). Stdlib only.
 """
@@ -30,7 +33,9 @@ import json
 import os
 import sys
 
-from .auditor import Auditor
+from .agent_auditor import Auditor
+from .auditor import AuditService, RateLimitRefused
+from .auditor.models import DISCLAIMER
 from .auth import Auth, AuthenticationFailed
 from .config import ADMIN_USER, AGENT_TEMPLATES
 from .control import Control
@@ -67,6 +72,34 @@ def _require_owner_or_admin(actor: str, owner: str) -> None:
     if owner != actor and actor != ADMIN_USER:
         raise PermissionError(
             "cannot act on resources owned by another user")
+
+
+def _print_audit_report_text(report: dict) -> None:
+    """Human-readable rendering of a global audit report. Prints
+    every finding (the report is a complete record of what was
+    checked) and the mandatory disclaimer verbatim."""
+    summary = report["summary"]
+    counts = summary["counts_by_status"]
+    print(f"global audit report {report['report_id']}")
+    print(f"status: {report['status'].upper()}  "
+          f"ruleset: {report['ruleset_version']}  "
+          f"scope: {report['scope']}  "
+          f"evaluated_at: {report['evaluated_at']}")
+    print(f"rules run: {summary['rules_run']}  "
+          f"PASS: {counts['PASS']}  WARN: {counts['WARN']}  "
+          f"FAIL: {counts['FAIL']}  UNVERIFIED: {counts['UNVERIFIED']}")
+    print(f"snapshot: {summary['snapshot']['users']} users, "
+          f"{summary['snapshot']['agents']} agents, "
+          f"{summary['snapshot']['executions']} executions, "
+          f"{summary['snapshot']['audit_log_rows']} audit-log rows, "
+          f"{summary['snapshot']['api_keys']} api keys")
+    for f in report["findings"]:
+        evidence = ", ".join(f["evidence_ids"]) or "-"
+        print(f"[{f['status']}] {f['rule_id']} ({f['severity']}) — "
+              f"{f['title']} — evidence: {evidence} — "
+              f"{f['recommendation']}")
+    print()
+    print(DISCLAIMER)
 
 
 def main(argv=None) -> int:
@@ -132,6 +165,17 @@ def main(argv=None) -> int:
                    help="deprecated: must match the key owner if given")
     p.add_argument("--minutes", type=int, default=1)
 
+    p = sub.add_parser("audit-global",
+                       help="run a global audit (authenticated admin "
+                            "only; free, no credits charged)")
+    p.add_argument("--format", choices=["text", "json"], default="text",
+                   help="text (human-readable, default) or json")
+
+    p = sub.add_parser("audit-report",
+                       help="retrieve a stored global audit report "
+                            "(authenticated admin only)")
+    p.add_argument("--id", required=True, help="report id")
+
     args = parser.parse_args(argv)
     store, resource, control, factory, auditor, auth = _services(args.db)
     try:
@@ -142,6 +186,22 @@ def main(argv=None) -> int:
                   "be recovered:")
             print(result["key"])
             print(f"public id: {result['public_id']}")
+            return 0
+
+        if args.cmd == "audit-global":
+            # Phase 3: the raw key is passed straight through to the
+            # service, which authenticates it itself and enforces
+            # admin. The CLI never resolves an owner string first.
+            try:
+                report = AuditService(store, auth).run_global_audit(
+                    getattr(args, "api_key", None))
+            except RateLimitRefused as exc:
+                print(f"error: {exc}", file=sys.stderr)
+                return 1
+            if args.format == "json":
+                print(json.dumps(report, indent=2, ensure_ascii=False))
+            else:
+                _print_audit_report_text(report)
             return 0
 
         actor = _resolve_actor(auth, args)
@@ -194,6 +254,13 @@ def main(argv=None) -> int:
         elif args.cmd == "execute":
             print(json.dumps(control.execute_agent(args.id, actor, args.minutes),
                              indent=2, ensure_ascii=False, default=str))
+        elif args.cmd == "audit-report":
+            auth.require_admin(actor)
+            report = store.get_audit_report(args.id)
+            if report is None:
+                print(f"error: unknown report: {args.id}", file=sys.stderr)
+                return 1
+            print(json.dumps(report, indent=2, ensure_ascii=False))
         return 0
     except AuthenticationFailed as exc:
         # Generic message by design: never reveal whether the key id

@@ -62,6 +62,28 @@ CREATE TABLE IF NOT EXISTS api_keys (
     revoked INTEGER NOT NULL DEFAULT 0,
     revoked_at TEXT
 );
+CREATE TABLE IF NOT EXISTS audit_reports (
+    report_id TEXT PRIMARY KEY,
+    requested_by TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    evaluated_at TEXT NOT NULL,
+    policy TEXT NOT NULL,
+    ruleset_version TEXT NOT NULL,
+    status TEXT NOT NULL,
+    findings TEXT NOT NULL,
+    summary TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS audit_reports_no_update
+BEFORE UPDATE ON audit_reports
+BEGIN
+    SELECT RAISE(ABORT, 'audit_reports is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS audit_reports_no_delete
+BEFORE DELETE ON audit_reports
+BEGIN
+    SELECT RAISE(ABORT, 'audit_reports is append-only');
+END;
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -330,3 +352,71 @@ class Store:
         secret = _secrets.token_hex(32)
         self.set_meta("server_secret", secret)
         return secret
+
+    # --- audit reports (Phase 3: global Auditor) ---
+    # The table is append-only in practice (UPDATE/DELETE triggers,
+    # no delete API). The triggers do NOT make it tamper-evident —
+    # same limits as the audit log (see docs/auditor-architecture.md
+    # §8.1): direct file edits, trigger drops, fabricated INSERTs or
+    # whole-DB replacement are not stopped by triggers.
+    def persist_global_audit(self, report: dict, log_actor: str,
+                             log_detail: str) -> None:
+        """Insert the audit_reports row AND the audit_global audit-log
+        entry in ONE write transaction (both or neither). If either
+        insert fails, both roll back: the system never holds a report
+        without its log event, or a log event without its report
+        (LTP-038 correction E)."""
+        conn = self.conn
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            conn.execute(
+                "INSERT INTO audit_reports (report_id, requested_by,"
+                " scope, created_at, evaluated_at, policy,"
+                " ruleset_version, status, findings, summary)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (report["report_id"], report["requested_by"],
+                 report["scope"], report["created_at"],
+                 report["evaluated_at"],
+                 json.dumps(report["policy"]),
+                 report["ruleset_version"], report["status"],
+                 json.dumps(report["findings"]),
+                 json.dumps(report["summary"])))
+            conn.execute(
+                "INSERT INTO audit_log (ts, actor, action, target, detail)"
+                " VALUES (?, ?, 'audit_global', ?, ?)",
+                (report["created_at"], log_actor, report["report_id"],
+                 log_detail))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    @staticmethod
+    def _report_from_row(row: sqlite3.Row) -> dict:
+        d = dict(row)
+        d["policy"] = json.loads(d["policy"])
+        d["findings"] = json.loads(d["findings"])
+        d["summary"] = json.loads(d["summary"])
+        return d
+
+    def get_audit_report(self, report_id: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT * FROM audit_reports WHERE report_id = ?",
+            (report_id,)).fetchone()
+        return self._report_from_row(row) if row else None
+
+    def list_audit_reports(self, limit: int = 20) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM audit_reports ORDER BY created_at DESC,"
+            " report_id DESC LIMIT ?",
+            (limit,)).fetchall()
+        return [self._report_from_row(r) for r in rows]
+
+    def latest_audit_report(self) -> dict | None:
+        """Newest report by created_at — the rate-limit clock for
+        global audits (LTP-038 §3B). Only successful audits create a
+        report row, so a failed audit never moves the clock."""
+        row = self.conn.execute(
+            "SELECT * FROM audit_reports ORDER BY created_at DESC,"
+            " report_id DESC LIMIT 1").fetchone()
+        return self._report_from_row(row) if row else None

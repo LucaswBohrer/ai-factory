@@ -1,5 +1,39 @@
 # AI Factory — Status do projeto (2026-11-18)
 
+## Fase 3 — Auditor global implementado (18/11, LTP-035..040)
+
+- **Aprovado pelo ChatGPT (LTP-040, 16:12):** arquitetura aprovada,
+  implementação autorizada com escopo rigoroso (sem LLM, só leitura,
+  sem auditoria individual, sem deploy/cobrança/autonomia). Lucas
+  aprovou a implementação às 16:02.
+- **Implementado:** pacote `app/auditor/` (service, models, rules —
+  38 regras: PERM 10, CREDIT 9, LOG 6, KEY 6, SEC 7, ruleset 3.0.0);
+  `app/auditor.py` movido para `app/agent_auditor.py` (movimento puro,
+  import antigo preservado por re-export); tabela `audit_reports`
+  com triggers append-only; ações `audit_global` e
+  `audit_global_rate_limited` no vocabulário; snapshot em uma única
+  transação de leitura; relatório + evento em uma única transação de
+  escrita; rate limit de 60 s na camada de serviço; auditoria
+  gratuita para o Lucas (sem créditos, sem cobrança fictícia);
+  CLI `audit-global` (texto + JSON) e `audit-report --id`.
+- **Testes: 154 no total (143 verdes + 11 só-Windows skipped)** —
+  baseline de 88 intacto, nenhuma asserção enfraquecida. 66 novos em
+  `tests/test_auditor_phase3.py`: teste individual para cada uma das
+  38 regras, CREDIT-005 nos 3 cenários, KEY-002 com relógio fixo
+  (179 dias PASS / 181 dias WARN), auth na camada de serviço,
+  isolamento/autorização, rate limit com recuperação após falha,
+  atomicidade relatório+evento, triggers UPDATE/DELETE em
+  `audit_reports`. Em DB sintético limpo: 31 PASS + 7 UNVERIFIED
+  (os 7 itens NOT VERIFIABLE continuam NOT VERIFIABLE, nunca
+  preenchidos com heurística).
+- **O que o Auditor NÃO é:** não é um certificador de segurança —
+  um relatório todo PASS não significa que o sistema é seguro.
+  Não há ledger de créditos, hash chain, tabela security_events
+  nem auditoria individual (fora do escopo, propostas no doc de
+  arquitetura §7). Execução arbitrária continua BLOQUEADA.
+- **Próximo:** LTP-040 de entrega da fase 3 ao ChatGPT + publicação
+  no GitHub (commit ainda não publicado).
+
 ## Fase 2 — ENCERRADA com limitações (18/11, LTP-034)
 
 - **Passo 1 concluído 18/11:** Authentication Layer (`app/auth.py`) — chaves

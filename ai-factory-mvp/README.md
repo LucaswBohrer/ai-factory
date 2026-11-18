@@ -17,7 +17,7 @@ sem chamadas a API de LLM no MVP.
 - **Resource Core** (`app/resource_core.py`) — contabilidade de créditos
   internos. Consumo real de APIs é registrado num campo separado
   (`real_api_cost`), independente dos créditos internos.
-- **Agent Auditor** (`app/auditor.py`) — primeiro agente, **somente leitura**.
+- **Agent Auditor** (`app/agent_auditor.py`, era `app/auditor.py`) — primeiro agente, **somente leitura**.
   Analisa config, permissões, riscos, ciclos de execução e consumo de um
   agente e devolve achados com severidade `info` / `warning` / `critical`.
   Nunca modifica o agente auditado (verificado por teste).
@@ -84,7 +84,7 @@ rejeita `admin`, `self_modify`, `self_modify_permissions`, `create_agent`
 
 ```bash
 cd ~/workspace/ai-factory-mvp
-python3 -m unittest discover -s tests -v   # testes (88: 77 verdes + 11 só-Windows skipped)
+python3 -m unittest discover -s tests -v   # testes (154: 143 verdes + 11 só-Windows skipped)
 
 # Autenticação (fase 2, passo 1): bootstrap cria a primeira chave
 # (lucas, admin) — guarde-a, ela só é mostrada uma vez.
@@ -103,6 +103,11 @@ python3 -m app.cli credits [--owner alice]
 python3 -m app.cli kill-switch on|off
 python3 -m app.cli list-audit-log [--limit 20]
 python3 -m app.cli execute --id <agent-id> --minutes 2
+
+# Auditoria global (fase 3): determinística, só leitura, só admin (lucas),
+# gratuita (sem créditos). 38 regras, relatório PASS/WARN/FAIL/UNVERIFIED.
+python3 -m app.cli audit-global [--format json|text]
+python3 -m app.cli audit-report --id <report-id>
 ```
 
 ## Layout
@@ -110,31 +115,34 @@ python3 -m app.cli execute --id <agent-id> --minutes 2
 ```
 app/
   config.py         limites, custos, allowlists, templates
-  store.py          SQLite (users, agents, executions, audit_log, meta, api_keys)
+  store.py          SQLite (users, agents, executions, audit_log, meta, api_keys, audit_reports)
   resource_core.py  créditos + custo real de API (separado)
   control.py        registro, kill switch, audit log, execução
   factory.py        criação por template + validação + limites
-  auditor.py        Agent Auditor (somente leitura)
+  agent_auditor.py  Agent Auditor (somente leitura; era app/auditor.py, movido na fase 3)
+  auditor/          Auditoria global (fase 3): service.py, models.py, rules/ (38 regras)
   auth.py           API keys (HMAC, só hash armazenado, revogação)
   executor.py       supervisor + worker isolado (fase 2, passo 2)
-  cli.py            CLI (ator resolvido da chave validada)
+  cli.py            CLI (ator resolvido da chave validada; audit-global passa a chave crua p/ o serviço)
 tests/test_mvp.py   31 testes (unittest, stdlib)
 tests/test_isolation_ltp022.py   10 testes de isolamento (LTP-022)
 tests/test_auth_phase2.py        14 testes de autenticação (fase 2, passo 1)
 tests/test_executor_phase2.py    33 testes do executor (fase 2, passo 2; 11 só-Windows)
+tests/test_auditor_phase3.py     66 testes do Auditor global (fase 3)
 tools/diagnostico-windows-readonly.ps1  diagnóstico read-only do Windows (fase 2, passo 2)
 docs/windows-isolation-matrix.md  matriz de isolamento Windows (fase 2)
 docs/windows-diagnostic.md        como rodar o diagnóstico e ler o resultado
+docs/auditor-architecture.md     arquitetura detalhada do Auditor global (fase 3)
 ```
 
 ## Testes
 
-`python3 -m unittest discover -s tests -v` — 88 testes em 2026-11-18
-(77 verdes + 11 skipped): 55 do baseline (31 MVP + 10 isolamento +
-14 autenticação) + 33 do executor. Os 11 skipped são os testes
-adversariais só-Windows (LTP-029 §5) — eles pulam no Linux com
-"requires Windows AppContainer — not validated" e SÓ passam no
-Windows real. Um skip não é um pass. Cobrem: profundidade,
+`python3 -m unittest discover -s tests -v` — 154 testes em 2026-11-18
+(143 verdes + 11 skipped): 88 do baseline (31 MVP + 10 isolamento +
+14 autenticação + 33 executor) + 66 do Auditor global (fase 3). Os 11
+skipped são os testes adversariais só-Windows (LTP-029 §5) — eles
+pulam no Linux com "requires Windows AppContainer — not validated" e
+SÓ passam no Windows real. Um skip não é um pass. Cobrem: profundidade,
 teto de 3 ativos/usuário, dedução de créditos + bypass do Lucas
 logado, kill switch bloqueando criação/execução, auditor sinalizando
 permissão arriscada, audit log append-only (trigger), Factory

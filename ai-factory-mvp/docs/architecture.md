@@ -47,12 +47,15 @@ no LLM calls, SQLite via `sqlite3`.
               │  triggers), meta, │
               │  api_keys (hash   │
               │  only, no raw    │
-              │  keys)           │
+              │  keys),           │
+              │  audit_reports   │
+              │  (append-only via │
+              │  triggers)        │
               └──────────────────┘
 
               ┌──────────────────┐
               │ Auditor          │
-              │ auditor.py       │
+              │ agent_auditor.py │
               │ READ-ONLY: reads │
               │ agent + log +    │
               │ executions,      │
@@ -63,6 +66,24 @@ no LLM calls, SQLite via `sqlite3`.
               │ (asserted).      │
               └──────────────────┘
 ```
+
+## Data flow — global audit (Phase 3, LTP-035..040)
+
+CLI `audit-global` → raw key passed through, never resolved to an
+owner string at the CLI → `AuditService.run_global_audit` authenticates
+the key itself (`Auth.authenticate` + `require_admin`; non-admin →
+PermissionError, no report, no log) → rate limit (60 s, from latest
+successful report; refusals log `audit_global_rate_limited`, create no
+report, do not move the clock) → snapshot in ONE SQLite read
+transaction (explicit BEGIN, raw SELECTs, closed before evaluation) →
+38 deterministic rules in `app/auditor/rules/` (PERM 10, CREDIT 9,
+LOG 6, KEY 6, SEC 7; ruleset 3.0.0; every rule returns exactly one
+Finding; non-applicable → UNVERIFIED) → report row + `audit_global`
+log entry in ONE write transaction (both or neither) → report
+retrieved with `audit-report --id`. The audit is FREE for Lucas (no
+credits, no fictitious charge). It is NOT a security certifier: a
+report with all PASS does not mean the system is secure. Full
+specification in `docs/auditor-architecture.md`.
 
 ## Data flow — authenticated command (Phase 2, step 1)
 
