@@ -163,3 +163,17 @@ provável, mas a escolha é dele.
   autorizado expressamente pelo Lucas + revisão do script do probe
   pelo ChatGPT + 10 testes com resultado PASS/FAIL/UNVERIFIED.
 - Fase 3 NÃO iniciada automaticamente.
+
+---
+
+## Encerramento da fase 3 (18/11, LTP-044)
+
+- Auditor determinístico implementado (`app/auditor/`, 38 regras v3.0.0,
+  evento `audit_global`, auth na camada de serviço, rate limit 60 s).
+- Build 1 aprovado definitivamente pelo ChatGPT (LTP-044), após a
+  correção do bloqueador SEC-004/CREDIT-006 (LTP-042 → LTP-043).
+- Testes: **159 (148 passam, 11 Windows-only pulados)** — baseline
+  desta versão. Auditoria em banco limpo: 31 PASS / 7 UNVERIFIED.
+- Relatório de encerramento: `docs/phase-3-closure.md`.
+- Execução arbitrária continua BLOQUEADA. Fase 4 NÃO iniciada
+  automaticamente.
