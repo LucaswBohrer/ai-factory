@@ -24,7 +24,7 @@ e ChatGPT arquitetando, pelo Lucas Team Protocol (LTP).
 
 ## Status
 
-MVP build 1 pronto, 31/31 testes verdes (ver
+MVP build 2 pronto, 41/41 testes verdes (31 da regressão + 10 de isolamento LTP-022) (ver
 `ai-factory-mvp/docs/evidence-containment.md`). Revisão técnica do
 ChatGPT pendente (LTP-021). Gaps de isolamento conhecidos, documentados
 em `ai-factory-mvp/docs/known-vulnerabilities.md` — corrigir antes de

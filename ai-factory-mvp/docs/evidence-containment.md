@@ -1,5 +1,39 @@
 # Containment evidence — MVP, 2026-11-18
 
+## Build 2 (LTP-022) — isolation fixes
+
+Verified on this VM. Test command:
+
+```
+$ cd ~/workspace/ai-factory-mvp && python3 -m unittest discover -s tests -v
+Ran 41 tests in 0.056s — OK
+```
+
+41 tests: the 31 from build 1 plus 10 new isolation tests in
+`tests/test_isolation_ltp022.py`, exactly the 10 cases from LTP-022:
+
+| # | LTP-022 case | Test | Result |
+|---|---|---|---|
+| 1 | Alice executes Alice's agent | `test_01_alice_executes_own_agent` | Pass — execution finished, alice 100 → 89 (10 create + 1 execute) |
+| 2 | Bob executes Alice's agent | `test_02_bob_cannot_execute_alices_agent` | Pass — `PermissionError`, 0 execution records, bob still 100, alice unchanged, no `execute_agent` log entry |
+| 3 | Bob lists Alice's agents | `test_03_bob_cannot_list_alices_agents` | Pass — `[]` for owner=alice and for no filter; alice sees 1, lucas sees 1 |
+| 4 | Bob audits Alice's agent | `test_04_bob_cannot_audit_alices_agent` | Pass — `ValueError: unknown agent: <id>` (same as nonexistent id), bob still 100, no log entry for the attempt |
+| 5 | Bob lists audit logs | `test_05_bob_cannot_see_alices_log_entries` | Pass — bob sees `[]`; no entry with actor=alice or target=alice's agent; alice sees her own, lucas sees all |
+| 6 | Lucas admin operations | `test_06_lucas_admin_operations` | Pass — lucas executes alice's agent, `admin_execute` entry logged naming alice as owner; lucas lists agents of both alice and bob |
+| 7 | Creation with parent_id of another agent | `test_07_creation_with_agent_parent_rejected` | Pass — `ValueError`, depth rule unchanged per LTP-022 §3 |
+| 8 | Kill switch blocks creation/execution | `test_08_kill_switch_blocks_creation_and_execution` | Pass — `KillSwitchOn` for both, works again after OFF |
+| 9 | Insufficient balance blocks creation | `test_09_insufficient_balance_blocks_creation` | Pass — `InsufficientCredits`, 0 agents for carol |
+| 10 | Full regression | `test_10_full_regression_existing_suite` | Pass — the whole pre-existing suite re-run in-process: 31 tests, all green |
+
+CLI smoke test (2026-11-18, temp DB, removed afterwards): bob
+`list-agents --owner alice --actor bob` → empty, exit 0; bob
+`execute` → `error: not authorized to execute this agent`, exit 1;
+bob `audit-agent` → `error: unknown agent: <id>`, exit 1; bob
+`list-audit-log --actor bob` → empty; lucas `execute` on alice's
+agent → OK, log shows `admin_execute` + `credit_bypass` entries.
+
+## Build 1 (LTP-020)
+
 Verified by Theo on this VM, after the builder run. Test command:
 
 ```
@@ -38,18 +72,27 @@ All 31 tests pass. Mapping to the LTP-017 limits:
 - `create-agent --owner carol --kind summarizer --approve` → `InsufficientCredits: carol cannot afford 10 credits to create an agent`. Agents created for carol: 0.
 - Alice after 1 creation: `alice: 90 credits` (100 − 10). Lucas: `unlimited (admin, bypass logged)`.
 
-### Isolation between users — PARTIAL, see vulnerabilities
+### Isolation between users — FIXED in build 2 (LTP-022)
 
-- `list-agents --owner alice` returns only alice's agent; `--owner bob` only bob's. Per-owner filter works.
-- `suspend_agent` by non-owner non-admin → `PermissionError: only the owner or Lucas can suspend an agent`. Enforced.
-- GAPS found by Theo (not covered by the 31 tests): `list-agents` with no `--owner` returns all agents, and `execute_agent` does not verify actor == owner — see `known-vulnerabilities.md`. These are documented, not hidden.
+- `list-agents` is ownership-filtered: a non-admin only sees their own
+  agents; any other request returns `[]`, and no actor given returns `[]`.
+- `execute_agent` checks actor == owner or Lucas, before any charge or
+  execution record; admin execution is logged as `admin_execute`.
+- `audit_agent` checks ownership before charging: a non-owner gets the
+  same `unknown agent` error as for a nonexistent id, with no charge
+  and no log entry for the attempt.
+- `list_audit_log` is ownership-filtered: a non-admin sees only entries
+  they authored or entries targeting their own agents.
+- `suspend_agent` / `kill_agent` by non-owner non-admin → `PermissionError`.
+  Enforced (unchanged from build 1).
+- Residual: actor identity is caller-supplied (there is no auth layer in
+  the MVP). The ownership checks assume the actor string was validated
+  upstream — see `known-vulnerabilities.md`.
 
-## Depth semantics — open question (flagged by builder, confirmed by Theo)
+## Depth semantics — DECIDED in LTP-022 §3 (was open in build 1)
 
-Implemented literally from the brief: any agent `parent_id` is rejected,
-so created agents always have depth 0 and the ceiling of 1 is never
-reached in the MVP. This is stricter than the cap. If the intended
-semantics were "an agent may create one level down (depth 1)", that is
-a one-line change in `factory.py` but it contradicts "parent must be
-human/Factory" — needs Lucas + ChatGPT confirmation before changing.
-No change made in this build.
+ChatGPT confirmed the current implementation is correct: Factory
+(human) may create agents, agents may execute authorized functions,
+agents may NOT create other agents, and `parent_id` of an agent stays
+rejected. "Profundidade 1" means 1 generation, creation by agents is
+prohibited, recursion is disabled. **No change to `factory.py`.**

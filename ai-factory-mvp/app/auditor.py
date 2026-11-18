@@ -29,7 +29,12 @@ class Auditor:
 
     def audit_agent(self, agent_id: str, actor: str) -> dict:
         agent = self.store.get_agent(agent_id)
-        if agent is None:
+        # Ownership check FIRST (LTP-022 fix B), before any charging
+        # or logging: a non-owner gets exactly the same error as for a
+        # nonexistent agent, so the agent's existence is not revealed,
+        # and nothing is charged or recorded for the denied attempt.
+        if agent is None or (actor != config.ADMIN_USER
+                             and actor != agent["owner"]):
             raise ValueError(f"unknown agent: {agent_id}")
         # Snapshot BEFORE, to prove read-only behaviour in tests.
         before = dict(agent)

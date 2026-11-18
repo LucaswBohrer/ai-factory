@@ -28,11 +28,11 @@ outside the allowlist.
 | Create agent | Yes (bypass logged, not charged) | Yes, if credits + approval | Only own agents; cap is per-owner |
 | Toggle kill switch | Yes, only Lucas | No — `PermissionError` | No |
 | Suspend / kill agent | Yes | Yes (own agents) | No — `PermissionError` |
-| Execute agent | Yes (subject to agent perms) | Yes (subject to agent perms) | **GAP — see known-vulnerabilities.md: `execute_agent` does not check actor == owner** |
-| List agents `--owner X` | Yes | Yes, filtered by owner | Filter works, but see gap below |
-| List agents (no filter) | Yes | **GAP — returns all agents, no ownership check** | **GAP — same** |
-| Audit agent | Yes | Yes (costs 1 credit, or bypass logged) | Yes if they know the agent id — no ownership check on audit |
-| Read audit log | Via CLI, no actor check | Via CLI, no actor check | Via CLI, no actor check |
+| Execute agent | Yes (subject to agent perms; logged as `admin_execute` when it is another user's agent) | Yes (subject to agent perms) | No — `PermissionError`, nothing charged, no execution record (fixed build 2, LTP-022) |
+| List agents `--owner X` | Yes, any owner | Yes, only own (`--owner` must match `--actor`) | No — returns `[]`, existence not revealed |
+| List agents (no filter) | Yes, all agents | No — returns `[]` | No — returns `[]` |
+| Audit agent | Yes (costs 1 credit, or bypass logged) | Yes (costs 1 credit) | No — `ValueError: unknown agent`, same as nonexistent id; no charge, no log entry |
+| Read audit log | Yes, all entries | Yes, only own entries (authored, or targeting own agents) | No — only own entries; other users' entries never shown |
 
 ## Kill switch
 

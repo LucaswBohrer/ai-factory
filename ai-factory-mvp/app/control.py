@@ -26,8 +26,26 @@ class Control:
                      detail: str = "") -> int:
         return self.store.append_audit(actor, action, target, detail)
 
-    def list_audit_log(self, limit: int = 100) -> list[dict]:
-        return self.store.list_audit_log(limit)
+    def list_audit_log(self, limit: int = 100,
+                       actor: str | None = None) -> list[dict]:
+        """Ownership-filtered audit log (LTP-022 fix B).
+
+        Admin (Lucas) sees everything. A non-admin sees only entries
+        they authored, plus entries targeting one of their own agents.
+        No actor given -> restrictive: nothing is returned. Other users'
+        entries are never revealed, not even their existence/count.
+        Filtering happens after fetching, so `limit` bounds the
+        *visible* entries, not the raw table scan.
+        """
+        if actor is None:
+            return []
+        entries = self.store.list_audit_log(limit=1000)
+        if actor == config.ADMIN_USER:
+            return entries[:limit]
+        own_agent_ids = {a["id"] for a in self.store.list_agents(owner=actor)}
+        visible = [e for e in entries
+                   if e["actor"] == actor or e["target"] in own_agent_ids]
+        return visible[:limit]
 
     # --- kill switch ---
     def is_kill_switch_on(self) -> bool:
@@ -48,7 +66,22 @@ class Control:
     def get_agent(self, agent_id: str) -> dict | None:
         return self.store.get_agent(agent_id)
 
-    def list_agents(self, owner: str | None = None) -> list[dict]:
+    def list_agents(self, owner: str | None = None,
+                    actor: str | None = None) -> list[dict]:
+        """Ownership-filtered registry (LTP-022 fix B).
+
+        Admin (Lucas) may list all agents or filter by any owner.
+        A non-admin may only list their own agents: requesting another
+        owner's list — or no owner at all — returns [] (empty, not an
+        error), so the existence of other users' agents is not revealed.
+        No actor given -> restrictive: [].
+        """
+        if actor is None:
+            return []
+        if actor == config.ADMIN_USER:
+            return self.store.list_agents(owner)
+        if owner is None or owner != actor:
+            return []
         return self.store.list_agents(owner)
 
     def count_active(self, owner: str) -> int:
@@ -76,14 +109,29 @@ class Control:
     def execute_agent(self, agent_id: str, actor: str, minutes: int = 1) -> dict:
         """Simulate a bounded execution. Enforces kill switch, active
         status, concurrent-execution cap, per-minute credit cost and the
-        5-minute cap. Returns the execution record."""
+        5-minute cap. Returns the execution record.
+
+        Authorization (LTP-022 fix A): the actor must be the agent's
+        owner or Lucas (admin). Ownership is checked server-side
+        against the stored agent row, before any charging or execution
+        record is created. A non-owner gets PermissionError and nothing
+        is charged or recorded. For a nonexistent id, a non-admin gets
+        PermissionError as well, so existence is not confirmed; the
+        admin gets the plain "unknown agent" error.
+        """
         self.require_kill_switch_off()
         if minutes < 1 or minutes > config.MAX_EXECUTION_MINUTES:
             raise ValueError(
                 f"execution minutes must be 1..{config.MAX_EXECUTION_MINUTES}")
         agent = self.store.get_agent(agent_id)
         if agent is None:
-            raise ValueError(f"unknown agent: {agent_id}")
+            if actor == config.ADMIN_USER:
+                raise ValueError(f"unknown agent: {agent_id}")
+            raise PermissionError("not authorized to execute this agent")
+        if actor != config.ADMIN_USER and actor != agent["owner"]:
+            raise PermissionError("not authorized to execute this agent")
+        is_admin_execution = (actor == config.ADMIN_USER
+                              and actor != agent["owner"])
         if agent["status"] != "active":
             raise ValueError(f"agent is {agent['status']}, not active")
         if "execute_limited" not in agent["permissions"]:
@@ -101,6 +149,13 @@ class Control:
             from .resource_core import InsufficientCredits
             raise InsufficientCredits(
                 f"{actor} cannot afford {cost} credits for execution")
+        if is_admin_execution:
+            # Explicit admin-bypass record, in addition to the
+            # credit_bypass entry ResourceCore.charge already logged.
+            self.append_audit(
+                actor, "admin_execute", agent_id,
+                f"admin bypass: {actor} executed agent owned by "
+                f"{agent['owner']} (admin execution of another user's agent)")
         execution = self.store.start_execution(agent_id, actor, minutes)
         # MVP: execution is simulated and finishes immediately; the
         # running-count check above is what enforces the concurrency cap

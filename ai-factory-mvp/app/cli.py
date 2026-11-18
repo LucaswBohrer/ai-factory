@@ -2,11 +2,11 @@
 
 Usage (from ~/workspace/ai-factory-mvp/):
   python -m app.cli create-agent --owner alice --name helper --kind summarizer --approve
-  python -m app.cli list-agents [--owner alice]
+  python -m app.cli list-agents [--owner alice] [--actor alice]
   python -m app.cli audit-agent --id <agent-id> --actor lucas
   python -m app.cli credits [--owner alice]
   python -m app.cli kill-switch on|off --actor lucas
-  python -m app.cli list-audit-log [--limit 20]
+  python -m app.cli list-audit-log [--limit 20] [--actor alice]
   python -m app.cli execute --id <agent-id> --actor alice --minutes 2
 
 Default DB: ./data.db (override with AI_FACTORY_DB). Stdlib only.
@@ -55,6 +55,9 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("list-agents")
     p.add_argument("--owner")
+    p.add_argument("--actor", default=None,
+                   help="requesting user; only own agents are listed "
+                        "unless actor is lucas (admin)")
 
     p = sub.add_parser("audit-agent")
     p.add_argument("--id", required=True)
@@ -69,6 +72,9 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("list-audit-log")
     p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--actor", default=None,
+                   help="requesting user; only own entries are shown "
+                        "unless actor is lucas (admin)")
 
     p = sub.add_parser("execute")
     p.add_argument("--id", required=True)
@@ -87,7 +93,7 @@ def main(argv=None) -> int:
                 approved_by_human=args.approve)
             print(json.dumps(agent, indent=2, ensure_ascii=False))
         elif args.cmd == "list-agents":
-            for a in control.list_agents(args.owner):
+            for a in control.list_agents(args.owner, actor=args.actor):
                 print(f"{a['id']}  {a['name']}  ({a['kind']})"
                       f"  owner={a['owner']}  status={a['status']}"
                       f"  depth={a['depth']}  credits={a['credits_used']}/{a['max_credits']}")
@@ -102,7 +108,7 @@ def main(argv=None) -> int:
             control.set_kill_switch(args.state == "on", args.actor)
             print(f"kill switch: {args.state}")
         elif args.cmd == "list-audit-log":
-            for e in control.list_audit_log(args.limit):
+            for e in control.list_audit_log(args.limit, actor=args.actor):
                 print(f"#{e['id']} {e['ts']} {e['actor']} {e['action']}"
                       f" {e['target']} — {e['detail']}")
         elif args.cmd == "execute":

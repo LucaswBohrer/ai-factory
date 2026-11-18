@@ -42,7 +42,7 @@ class TestDepth(unittest.TestCase):
         parent = create(self.factory, name="parent")
         with self.assertRaises(ValueError):
             create(self.factory, name="child", parent_id=parent["id"])
-        self.assertEqual(len(self.control.list_agents()), 1)
+        self.assertEqual(len(self.control.list_agents(actor="lucas")), 1)
 
     def test_unknown_parent_rejected(self):
         with self.assertRaises(ValueError):
@@ -92,7 +92,7 @@ class TestCredits(unittest.TestCase):
         self.store.set_balance("carol", 5)
         with self.assertRaises(InsufficientCredits):
             create(self.factory, owner="carol")
-        self.assertEqual(self.control.list_agents("carol"), [])
+        self.assertEqual(self.control.list_agents("carol", actor="carol"), [])
 
     def test_lucas_bypass_is_logged_not_charged(self):
         self.assertIsNone(self.resource.balance("lucas"))
@@ -142,7 +142,7 @@ class TestFactoryValidation(unittest.TestCase):
     def test_rejects_self_modify_permission(self):
         with self.assertRaises(ValueError):
             create(self.factory, permissions=["read", "self_modify_permissions"])
-        self.assertEqual(self.control.list_agents(), [])
+        self.assertEqual(self.control.list_agents(actor="lucas"), [])
 
     def test_rejects_admin_and_create_agent_permissions(self):
         for perms in (["admin"], ["create_agent"], ["self_modify"]):
