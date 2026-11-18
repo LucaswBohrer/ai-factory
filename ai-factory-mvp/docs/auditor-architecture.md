@@ -1,11 +1,12 @@
 # Phase 3 — Auditor Architecture (detailed design document)
 
-**Status:** DOCUMENT ONLY. Direction approved by ChatGPT (LTP-036);
-implementation **NOT authorized** yet. This document must be approved
-by Lucas before any code is written. No code, no tests, no schema
-changes were made to produce it.
+**Status:** DOCUMENT ONLY. Direction approved by ChatGPT (LTP-036),
+approved with adjustments (LTP-038); implementation **NOT authorized**
+yet. This document must be approved by Lucas before any code is
+written. No code, no tests, no schema changes were made to produce it.
+Revision 2: updated per LTP-038 §1–§3 (see §14).
 
-**Ruleset version (proposed):** `3.0.0`
+**Ruleset version:** `3.0.0` (initial version, decided LTP-038 §1)
 **Baseline at time of writing:** 88 tests (77 pass, 11 Windows-only
 skipped) — see §11.1 for the correction to LTP-036 §6 item 11, which
 says 55.
@@ -28,11 +29,14 @@ NOT an autonomous agent with administrative powers.
 
 | Decision | Rule |
 |---|---|
-| Global audit | Only Lucas (admin), authenticated via API key. `Auth.require_admin` + service-level check. |
+| Global audit | Only Lucas (admin). The CLI passes the raw `--api-key` through to the service; the service authenticates it itself via the auth layer (`Auth.authenticate` + `require_admin`) and never accepts a bare owner string. See §8.4 / §9.3 (LTP-038 correction 3A). |
 | Individual-user audit | OUT of the Phase 3 MVP. A common user audits nothing in this phase (not even their own data, via this service). |
 | Agents auditing | No agent audits anything in this phase. The Auditor *agent template* (`auditor` kind) is unchanged; the new service is server-side code, not an agent action. |
 | Rules | Pure deterministic functions. No LLM calls. No side effects. No direct access to the CLI. |
-| Writes | Read-only against everything audited. The only writes are: one row in the new `audit_reports` table, and one `audit_log` entry recording that the audit ran (see §8.4 — written *after* the rules read their snapshot, so it cannot influence its own result). |
+| Writes | Read-only against everything audited. The only writes are: one row in the new `audit_reports` table, and one `audit_global` audit-log entry recording that the audit ran (see §8.4 — both written in a single transaction *after* the rules read their snapshot, so neither can influence its own result). |
+| Cost | FREE for Lucas: no credit charge, no `credit_bypass` entry. A fictitious charge would be noise (the admin bypass means it has no effect). The run is recorded by the `audit_global` log entry itself. Decided LTP-038 §1. |
+| Rate limit | Configurable minimum interval between successful global audits (`AUDIT_GLOBAL_MIN_INTERVAL_SECONDS`, default 60), enforced in the service layer, not only in the CLI. A failed audit never blocks a re-audit; a refusal is logged as `audit_global_rate_limited`. See §8.4. |
+| Report retention | No automatic deletion in Phase 3. The rate limit above is the guard against accidental growth (one row per audit). |
 | Execution | No arbitrary code execution. The isolated executor (Phase 2) is not used by the Auditor and stays BLOCKED. |
 | Deploy / payments | Out of scope, unchanged from Phase 1/2. |
 
@@ -94,9 +98,27 @@ These are the only `action` values the system ever writes to
 
 `create_agent`, `execute_agent`, `execute_isolated`,
 `execute_refused`, `execute_failed`, `audit_agent`,
+`audit_global`, `audit_global_rate_limited`,
 `credit_charge`, `credit_refund`, `credit_bypass`, `admin_execute`,
 `kill_switch_on`, `kill_switch_off`, `suspend_agent`, `kill_agent`,
 `create_api_key`, `revoke_api_key`, `real_api_cost`.
+
+`audit_global` is the audit's own event (actor = the authenticated
+admin, `target` = the `report_id`). It is excluded from SEC-001's
+action set, so it can never be mistaken for a cross-user audit
+action; LOG-004 accepts it (and `audit_global_rate_limited`) as
+vocabulary. `audit_global_rate_limited` is the record of a global
+audit refused by the rate limit (actor = the authenticated
+requester, no target) — see §8.4.
+
+**Never logged:** read/list actions (`list-agents`, `list-audit-log`,
+`credits`), failed authentications (a bad key fails in
+`Auth.authenticate` before any audit call), and denied authorization
+attempts (`execute_agent` / `audit_agent` raise `PermissionError` /
+`ValueError` *before* any charge or log entry — by design, LTP-022).
+Rate-limit refusals of a global audit ARE logged, as
+`audit_global_rate_limited` — that is the clear record of the
+refusal required by LTP-038 §3B.
 
 **Never logged:** read/list actions (`list-agents`, `list-audit-log`,
 `credits`), failed authentications (a bad key fails in
@@ -206,7 +228,8 @@ audit-log detail string.
   checkable from structured data (see §7.1).
 - (I5) Every `credit_refund` corresponds to a `refused`/`failed`
   execution — checkable only approximately, by agent + time ordering
-  (see CREDIT-004).
+  (see CREDIT-005, LTP-038 correction F: no candidate → WARN; one
+  candidate → WARN, approximate; several candidates → UNVERIFIED).
 
 ## 3. Audit log — real structure and real guarantees
 
@@ -360,10 +383,15 @@ anyone who can read the DB file can read it.
 Status values: `PASS`, `WARN`, `FAIL`, `UNVERIFIED`.
 Severity values: `low`, `medium`, `high`, `critical`.
 Every rule is a deterministic function of the database snapshot at
-audit time. A rule returns exactly one finding (or none, when it
-passes cleanly — see §8.2: passing rules produce a PASS finding so
-the report is a complete record, except pure informational checks
-which produce an `info` PASS finding).
+audit time. **Single rule contract (LTP-038 correction C): every
+registered rule produces exactly one finding, including PASS
+findings, so the report is a complete record of what was checked.
+A rule that does not apply to the snapshot (e.g. a rule about
+isolated executions when no isolated execution exists) produces one
+UNVERIFIED finding with an explicit reason — it never returns
+`None` and never disappears silently from the report. `rules_run`
+in the summary always equals the number of registered rules
+actually evaluated (38 in Phase 3).**
 
 `evidence_ids` contain only identifiers (agent ids, execution ids,
 audit-log ids `#n`, key `public_id`s). Never a key, a hash, a secret,
@@ -383,7 +411,7 @@ visible to the admin.
 | PERM-007 | Agent status is one of `active`, `suspended`, `killed`. | All valid | — | Any other value (only reachable by direct DB manipulation; `update_agent_status` rejects others) |
 | PERM-008 | `users.is_admin` agrees with the name rule: `is_admin = 1` iff `owner = "lucas"`. | All rows agree | — | Any row disagrees (flag is unused for authorization, so this is a data-integrity FAIL, severity `high`) |
 | PERM-009 | Kill-switch state is consistent: if `meta.kill_switch = "on"`, a `kill_switch_on` entry exists and no later `kill_switch_off` entry exists; if `"off"` (or absent), no unmatched `kill_switch_on` is the latest toggle entry. | Consistent | Latest toggle entry and stored value disagree (severity `medium`; indicates direct `meta` manipulation or a missing log entry) | — |
-| PERM-010 | No agent holds `execute_limited` unless it was explicitly granted at creation. **Not directly checkable:** the DB records only the current permission list, not how it got there. | — | — | See §7.4: classified NOT VERIFIABLE; the rule as stated cannot be implemented from recorded data. A weaker check — "agents with `execute_limited` are listed for review" — is an `info` finding, not a PASS/FAIL. |
+| PERM-010 | No agent holds `execute_limited` unless it was explicitly granted at creation. **Not directly checkable:** the DB records only the current permission list, not how it got there. | — | — | See §7.4: classified NOT VERIFIABLE. The rule produces exactly one UNVERIFIED finding (severity `medium`) whose `evidence_ids` list every agent holding `execute_limited`, for review — the list is the finding, not a PASS/FAIL. |
 
 ### 6.2 CREDIT — credit ledger reconciliation
 
@@ -393,7 +421,7 @@ visible to the admin.
 | CREDIT-002 | No agent at/above 80% of its cap: `credits_used / max_credits < 0.8` (skip when `max_credits = 0`). | All below 80% | Any agent ≥ 80% (severity `low`) | — |
 | CREDIT-003 | No agent balance is negative: `credits_used >= 0` and `users.credits_balance >= 0` for every row. | All ≥ 0 | — | Any negative (severity `high`; `refund` does not guard against over-refund) |
 | CREDIT-004 | Exact charge ↔ execution reconciliation: for every `finished` execution, exactly one matching `credit_charge` entry exists (same `agent_id`, amount = `minutes × COST_EXECUTION_PER_MIN`), and every `credit_charge` for executions matches one execution. | — | — | **NOT VERIFIABLE — see §7.1.** No ledger table, no charge id, no amount column; charges exist only as free-text `detail` strings. In Phase 3 this rule returns UNVERIFIED (one finding, severity `medium`, explaining the missing data). |
-| CREDIT-005 | Refund ↔ refused/failed execution (approximate): for every `credit_refund` audit entry with `target` = agent id, there exists an `executions` row for that agent with `status` IN (`refused`, `failed`) and `ended_at <=` the refund entry's `ts`. | Every refund matches ≥ 1 such row | A refund has no matching row (severity `medium`) — with the caveat that matching is by agent + time, not by id, so a WARN here means "unexplained refund", not "proven fraud" | — |
+| CREDIT-005 | Refund ↔ refused/failed execution (approximate — LTP-038 correction F): for every `credit_refund` audit entry with `target` = agent id, count the `executions` rows for that agent with `status` IN (`refused`, `failed`) and `ended_at <=` the refund entry's `ts`. Matching is by agent + time, never by id. | No `credit_refund` entries exist | A refund has no candidate row ("unexplained refund", severity `medium`), or exactly one candidate row — the finding states the association is approximate and the refund is NOT declared reconciled | — (no FAIL outcome; several candidate rows → **UNVERIFIED**, severity `medium` — the match is ambiguous, explained in the finding). A refund is NEVER declared reconciled from time proximity alone. |
 | CREDIT-006 | Admin bypass accounting: for every `executions` row with `actor = "lucas"` and agent owner ≠ `"lucas"`, a `credit_bypass` entry with the same `target` (agent id) exists; and for every `admin_execute` entry a `credit_bypass` entry with the same `target` exists. | All match | A bypass entry is missing its `admin_execute` counterpart, or vice versa (severity `medium`) | — |
 | CREDIT-007 | Stale `running` executions: no `executions` row has `status = "running"` with `started_at` older than 1 hour. (A simulated execution finishes immediately; an isolated run is bounded by its timeout, max 5 min + supervisor overhead.) | None stale | — | ≥ 1 stale row (severity `high`; a stale `running` row poisons the concurrency cap — this is the exact Phase 2 step-2 bug class) |
 | CREDIT-008 | Real API cost is accounted: for every agent with `real_api_cost > 0`, ≥ 1 `real_api_cost` audit entry with `target` = agent id exists. | All match | An agent has cost but no entry (severity `low`) | — |
@@ -416,7 +444,7 @@ visible to the admin.
 |---|---|---|---|---|
 | KEY-001 | Revocation consistency: `revoked = 1` iff `revoked_at IS NOT NULL`. | All rows consistent | — | Any row inconsistent (severity `high`; `revoke_api_key` always sets both, so inconsistency means direct DB manipulation) |
 | KEY-002 | Key age policy (parameter, default 180 days, stored in the report as `policy.key_max_age_days`): no active key has `created_at` older than the policy. | No active key older than the policy | ≥ 1 active key older (severity `low`; a policy alert, NOT proof of compromise — LTP-036 correction C) | — |
-| KEY-003 | Admin key count: exactly 1 active key for owner `"lucas"` is expected in normal operation; more than one active admin key, or zero active admin keys, is flagged. | Exactly 1 active admin key | 0 active admin keys (severity `high`; admin is locked out of key-based access) or > 1 (severity `medium`; hygiene) | — |
+| KEY-003 | Admin key count (LTP-038 correction G): the rule reports the number of active keys for owner `"lucas"` and the expected policy (1 active admin key in normal operation). Exactly 1 is a policy expectation, NOT an absolute security requirement. | Exactly 1 active admin key | 0 active admin keys (severity `high`; admin locked out of key-based access — observable in practice only in fixtures, or if a key was revoked between authentication and snapshot, since a global audit requires an authenticated admin key to run) or > 1 (severity `medium`; hygiene alert — the count is reported, with no presumption of compromise) | — (no FAIL outcome for this rule) |
 | KEY-004 | No duplicate `public_id`. | Unique | — | Any duplicate (severity `critical`; impossible through `PRIMARY KEY` — table rebuilt) |
 | KEY-005 | Revoked key used after revocation. | — | — | **NOT VERIFIABLE — see §7.2.** Failed authentications are never logged; a revoked key fails in `Auth.authenticate` before any audit call. |
 | KEY-006 | Server secret present: `meta.server_secret` exists and is a 64-hex-char string. | Present and well-formed | Missing (severity `low`; it will be generated on next use — but its absence in a long-lived DB means keys were never created or the meta row was deleted) | Malformed value (severity `high`) |
@@ -429,7 +457,7 @@ visible to the admin.
 | SEC-002 | No `kill_switch_on` / `kill_switch_off` entry has `actor` ≠ `"lucas"`. | None found | — | ≥ 1 found (severity `critical`) |
 | SEC-003 | No `create_api_key` / `revoke_api_key` entry has `actor` ≠ `"lucas"` and `actor` ≠ `"bootstrap"`. (Bootstrap is the legitimate first-key path.) | None found | — | ≥ 1 found (severity `critical`) |
 | SEC-004 | No `admin_execute` entry without a matching `credit_bypass` entry for the same `target` (same as CREDIT-006, reported here as the security view of the same check; the two rules share one implementation and one finding id — see note below). | Matches | Mismatch (severity `medium`) | — |
-| SEC-005 | Unsafe-dev runs are visible: count `execute_isolated` entries whose `detail` contains `unsafe_dev=True`. Each one is reported as an `info` finding (not a violation — the mode is legitimate for dev), so the report always shows how many unisolated runs happened. | Zero runs | ≥ 1 run (severity `low`, status WARN so it is never silent) | — |
+| SEC-005 | Unsafe-dev runs are visible: count `execute_isolated` entries whose `detail` contains `unsafe_dev=True`. The rule produces exactly one finding per audit summarising the count (see §8.2), so the report always shows how many unisolated runs happened. | Zero runs | ≥ 1 run (severity `low`, status WARN so it is never silent) | — |
 | SEC-006 | Denied cross-user attempts in the log. | — | — | **NOT VERIFIABLE — see §7.2.** Denied attempts are never logged by design (LTP-022): the code raises before any audit call. There is nothing to count. |
 | SEC-007 | Executions by suspended/killed agents. | — | — | **NOT VERIFIABLE exactly — see §7.5.** The DB records the agent's *current* status, not its status at execution time; an agent suspended after executing is indistinguishable from one suspended before executing. |
 
@@ -437,6 +465,13 @@ Note on SEC-004 / CREDIT-006: the same underlying check must not
 produce two findings with different ids. Implementation rule: one
 check, one finding; it is filed under CREDIT-006 and *referenced*
 from the SEC section of the summary, not duplicated.
+
+Note on `audit_global`: the audit's own event is excluded from
+SEC-001's action set (`execute_agent`, `execute_isolated`,
+`audit_agent` only), so an `audit_global` entry — actor always the
+authenticated admin, target a report id — can never be mistaken for
+a cross-user audit action. LOG-004 accepts `audit_global` and
+`audit_global_rate_limited` as vocabulary (§1.3).
 
 ## 7. NOT VERIFIABLE — checks the data does not support
 
@@ -604,7 +639,9 @@ CREATE TABLE audit_reports (
     report_id TEXT PRIMARY KEY,     -- uuid hex (12 chars, same style as agent/execution ids)
     requested_by TEXT NOT NULL,     -- owner who ran the audit; always "lucas" in Phase 3
     scope TEXT NOT NULL,            -- 'global' (only value in Phase 3)
-    created_at TEXT NOT NULL,       -- ISO-8601 UTC
+    created_at TEXT NOT NULL,       -- ISO-8601 UTC (row written)
+    evaluated_at TEXT NOT NULL,     -- ISO-8601 UTC reference instant captured with the snapshot; all age computations (KEY-002) use this, never the wall clock at rule time (LTP-038 correction D)
+    policy TEXT NOT NULL,           -- JSON: policy applied, e.g. {"key_max_age_days": 180, "audit_global_min_interval_seconds": 60}
     ruleset_version TEXT NOT NULL,  -- e.g. '3.0.0'
     status TEXT NOT NULL,           -- 'pass' | 'warn' | 'fail' (worst finding status; see §8.3)
     findings TEXT NOT NULL,         -- JSON array of finding objects (§8.2)
@@ -619,6 +656,19 @@ authentication/authorization failure, with no hint that reports
 exist). Reports are never deleted by the service (no retention
 policy in Phase 3 — noted as a future decision; the table is
 append-only in practice, enforced by having no delete API).
+
+Append-only hardening (LTP-038 correction E): the same two triggers
+used for `audit_log` are added for `audit_reports` in SCHEMA
+(`audit_reports_no_update`, `audit_reports_no_delete`), the same
+`CREATE TRIGGER IF NOT EXISTS` pattern already in `store.py` —
+simple and compatible with the current SQLite setup. Documented
+limitation: the triggers do not make the table tamper-evident —
+they do not stop direct file edits, trigger drops, INSERTs of
+fabricated reports, or whole-DB replacement (same limits as §3.2).
+The table is append-only by construction plus triggers, not
+tamper-evident. No automatic deletion: reports are never deleted by
+the service (decided LTP-038 §1); the rate limit (§8.4) is the guard
+against accidental growth.
 
 ### 8.2 Finding shape
 
@@ -646,11 +696,12 @@ append-only in practice, enforced by having no delete API).
   owner string (which the admin already sees).
 - `recommendation`: one line, what to do next.
 
-Every rule that runs produces exactly one finding, including PASS
+Every registered rule produces exactly one finding, including PASS
 findings — the report is a complete record of what was checked, not
-only of what failed. The one exception: SEC-005 produces one finding
-per run summarising the count of unsafe-dev runs (not one finding per
-run), so the report stays bounded.
+only of what failed (single rule contract, LTP-038 correction C).
+SEC-005 complies: it produces exactly one finding per audit, a count
+summary of unsafe-dev runs (not one finding per run), so the report
+stays bounded.
 
 ### 8.3 Overall status and summary
 
@@ -666,6 +717,8 @@ run), so the report stays bounded.
   "counts_by_status": {"PASS": 28, "WARN": 3, "FAIL": 0, "UNVERIFIED": 7},
   "counts_by_severity": {"low": 3, "medium": 6, "high": 1, "critical": 0},
   "scope": "global",
+  "evaluated_at": "2026-11-18T15:00:00+00:00",
+  "policy": {"key_max_age_days": 180, "audit_global_min_interval_seconds": 60},
   "snapshot": {"users": 4, "agents": 7, "executions": 12,
                "audit_log_rows": 58, "api_keys": 3},
   "disclaimer": "A report with all PASS does not mean the system is secure — it means the implemented checks found no violations within the examined scope."
@@ -673,26 +726,86 @@ run), so the report stays bounded.
 ```
 
 `snapshot` counts let a later reader tell whether the database the
-report describes is the one in front of them.
+report describes is the one in front of them. `evaluated_at` and
+`policy` make the report reproducible: the same database + same
+`ruleset_version` + same `evaluated_at` ⇒ same findings (age-based
+rules like KEY-002 depend on the reference instant, not on when the
+report is read).
 
-### 8.4 Cost, ordering, and the self-reference problem
+### 8.4 Cost, ordering, transactions, rate limit
 
-- A global audit costs `COST_AUDIT` = 1 credit, same as the
-  per-agent audit; for Lucas (the only caller in Phase 3) the admin
-  bypass applies and the bypass is logged, exactly as
-  `ResourceCore.charge` already does. (Decision, consistent with
-  existing behaviour — not a new rule.)
-- Ordering: the service (1) takes a snapshot (reads all tables it
-  needs), (2) runs every rule against the snapshot, (3) writes the
-  `audit_reports` row, (4) appends ONE `audit_agent` audit-log entry
-  recording that the audit ran (`target` = the `report_id`,
-  `detail` = counts by status). Step 4 happens after the rules have
-  read, so the audit's own log entry cannot influence its own
-  result. The entry is the audit trail of the audit — it is not
-  part of the audited data.
-- Reproducibility: same database + same `ruleset_version` ⇒ same
-  findings. The report records `ruleset_version` and `scope`, so two
-  reports are comparable only when both match.
+- **Cost: FREE for Lucas.** A global audit costs no credits and
+  generates no `credit_bypass` entry. Charging 1 credit with the
+  admin bypass would have no financial effect and would only add
+  noise to the history (decided LTP-038 §1). The run is recorded by
+  the `audit_global` audit-log entry itself (step 4 below).
+- **Service-layer authentication (LTP-038 correction 3A).** The
+  service entry point is `run_global_audit(store, auth, raw_key)`:
+  the service itself calls `Auth.authenticate(raw_key)` and
+  `Auth.require_admin(owner)`. The CLI passes the raw `--api-key`
+  value through; it never resolves an owner string to hand to the
+  service, and the service never accepts a bare `actor` string.
+  The old `run_global_audit(store, actor)` signature is removed.
+  A caller-constructed identity claiming to be Lucas, without a
+  valid raw key, fails at `Auth.authenticate` — see the test in
+  §10.3. (Why the raw key, not an identity object: a plain
+  dataclass claiming `owner="lucas"` is forgeable in-process, so
+  passing one down would move the trust boundary without
+  strengthening it. With the raw key, the auth layer is the only
+  resolver, inside the service itself.)
+- **Rate limit (LTP-038 correction 3B).** Configurable minimum
+  interval between *successful* global audits:
+  `AUDIT_GLOBAL_MIN_INTERVAL_SECONDS` in `config.py`, default 60.
+  Enforced in the service, not only in the CLI. The clock is the
+  latest persisted `audit_reports.created_at` (equivalently, the
+  latest `audit_global` event). A *failed* audit — an exception
+  during evaluation or persistence — never updates the clock and
+  never blocks a re-audit. A request refused by the rate limit
+  raises a distinct error, creates NO report row, and is logged
+  clearly as one `audit_global_rate_limited` audit-log entry
+  (actor = the authenticated requester, no target).
+- **Ordering and transactions (LTP-038 corrections B and E):**
+  1. Authenticate + authorize (service layer) and check the rate
+     limit. (Both are cheap reads; the rate-limit read uses the
+     latest report row only.)
+  2. Open ONE SQLite read transaction (`BEGIN` on the Store
+     connection), read every table the rules need into plain-dict
+     snapshot structures, capture `evaluated_at` (the reference
+     instant, `now()` at snapshot time), then close the
+     transaction (`COMMIT` — it read only). All rule inputs come
+     from this snapshot, so concurrent writes by another operation
+     cannot make the rules see a half-updated database. The
+     transaction is not held during rule evaluation or report
+     rendering.
+     Implementation note (grounded in `store.py`): `Store` opens
+     one `sqlite3` connection with default deferred transactions
+     and each accessor commits individually, so the snapshot must
+     be taken with an explicit `BEGIN` and raw SELECTs (or the
+     read-only accessors) inside that transaction, and no Store
+     method that writes/commits (e.g. `append_audit`,
+     `get_or_create_server_secret`) may be called while it is
+     open.
+  3. Run all 38 rules against the snapshot — outside any
+     transaction, deterministic, side-effect-free.
+  4. Persist in ONE write transaction: insert the `audit_reports`
+     row AND the `audit_global` audit-log entry (`target` =
+     `report_id`, `detail` = counts by status + `ruleset_version`).
+     If either insert fails, both roll back: the system never
+     holds a report without its log event, or a log event without
+     its report. The read transaction from step 2 is already
+     closed before this step. The entry is the audit trail of the
+     audit — it is not part of the audited data.
+  5. Return the report. The audit's own log entry was written
+     after evaluation, so it cannot influence its own result, and
+     a second run's LOG-004 check must accept `audit_global` as
+     vocabulary (see §10.5).
+- **Reproducibility:** same database + same `ruleset_version` +
+  same `evaluated_at` ⇒ same findings. The report records
+  `ruleset_version`, `scope`, `evaluated_at` and `policy`, so two
+  reports are comparable only when all match. Tests never depend
+  on the real environment clock: the service accepts an injectable
+  clock (`now` callable, default real UTC now); tests pass a fixed
+  datetime (LTP-038 correction D).
 
 ## 9. Target module layout
 
@@ -704,8 +817,8 @@ with one correction (§9.2).
 ```
 app/
   auditor/                  # NEW package (Phase 3)
-    __init__.py             # exposes run_global_audit(store, actor) -> report dict
-    service.py              # AuditService: authz, snapshot, orchestration, report persistence
+    __init__.py             # exposes run_global_audit(store, auth, raw_key, now=None) -> report dict
+    service.py              # AuditService: service-layer auth (authenticates the raw key itself), rate limit, consistent snapshot, orchestration, report persistence
     models.py               # Finding, Report, RulesetVersion; JSON (de)serialisation
     rules/
       __init__.py           # RULES registry: rule_id -> function; ruleset version
@@ -721,28 +834,32 @@ app/
 
 ### 9.1 Rules contract
 
-Each rule is a function `rule(snapshot) -> Finding | None` where
-`snapshot` is a plain-dict read of the tables the rule needs
-(`users`, `agents`, `executions`, `audit_log`, `api_keys`, `meta`).
-Rules are deterministic, side-effect-free, and never touch the CLI,
-the network, or the filesystem. A rule returns `None` only when it
-does not apply at all (e.g. a rule about isolated executions when
-no isolated execution exists — in which case no finding is emitted,
-rather than a vacuous PASS). The registry maps `rule_id` → function
-and carries the `ruleset_version`; adding a rule bumps the version.
+Each rule is a function `rule(snapshot) -> Finding` where
+`snapshot` is the plain-dict read taken inside the single read
+transaction (§8.4 step 2) — the tables the rule needs (`users`,
+`agents`, `executions`, `audit_log`, `api_keys`, `meta`) plus the
+captured `evaluated_at` and `policy`. Rules are deterministic,
+side-effect-free, and never touch the CLI, the network, or the
+filesystem. **Single contract (LTP-038 correction C): a rule never
+returns `None`.** Every registered rule produces exactly one
+finding; a rule that does not apply to the snapshot produces one
+UNVERIFIED finding with an explicit reason (e.g. "no isolated
+executions exist in this snapshot"). No rule disappears silently
+from a report. The registry maps `rule_id` → function and carries
+the `ruleset_version`; adding a rule bumps the version. `rules_run`
+in the summary always equals `len(registry)` (38 in Phase 3).
 
-### 9.2 Naming collision — must be decided before implementation
+### 9.2 Naming collision — DECIDED (LTP-038 §1)
 
 Python cannot have both `app/auditor.py` (the existing per-agent
 Auditor module) and `app/auditor/` (the new package) in the same
-package. The move proposed above — `app/auditor.py` →
-`app/agent_auditor.py`, pure move, no behaviour change, imports in
-`app/cli.py` updated — is the minimal resolution. Alternative (no
-move): put the service in flat modules `app/audit_service.py` +
-`app/audit_rules.py`. The move is preferred because it keeps the
-LTP-036 layout; the flat alternative is the fallback if the move is
-rejected. Either way, this is a decision for Lucas/ChatGPT, not
-something to improvise during implementation.
+package. **Decision: move `app/auditor.py` → `app/agent_auditor.py`,
+pure move, no behaviour change, imports in `app/cli.py` (and any
+other import of `app.auditor`) updated, preserving import
+compatibility for the per-agent Auditor's callers.** The flat
+alternative (`app/audit_service.py` + `app/audit_rules.py`) is
+dropped. The package stays `app/` — no rename to `ai_factory`
+(decided LTP-038 §1; see §11.2).
 
 ### 9.3 CLI
 
@@ -752,13 +869,17 @@ One new command, admin only:
 python -m app.cli --api-key <lucas-key> audit-global [--format json|text]
 ```
 
-Flow: `Auth.authenticate` → `require_admin` (non-admin gets the
-generic failure; the command's existence is not advertised to
-non-admins — it appears in `--help` like any other command, which is
-accepted: the help text reveals the command name, not any data) →
-`AuditService.run_global_audit` → print the report (JSON, or a
-human-readable text rendering) including the disclaimer. The command
-charges 1 credit via the normal path (admin bypass logged).
+Flow: the CLI passes the raw `--api-key` value through to
+`AuditService.run_global_audit(store, auth, raw_key)` — it does not
+resolve an owner string first. The service authenticates the key
+itself and enforces admin (non-admin gets the generic failure; the
+command's existence is not advertised to non-admins — it appears in
+`--help` like any other command, which is accepted: the help text
+reveals the command name, not any data) → print the report (JSON,
+or a human-readable text rendering) including the disclaimer. The
+command is FREE: no credit is charged and no bypass entry is
+written (decided LTP-038 §1). A rate-limit refusal surfaces as a
+clear error message and is logged as `audit_global_rate_limited`.
 
 ## 10. Synthetic test plan (tests are NOT written in this document)
 
@@ -784,6 +905,12 @@ For every rule in §6, at least two fixtures:
   an `execute_agent` log entry whose actor is neither the agent
   owner nor lucas (SEC-001 FAIL); a `kill_switch_on` entry with
   actor `alice` (SEC-002 FAIL).
+- **Event-vocabulary fixtures:** an `audit_global` entry in the log
+  (actor lucas, target a report id) passes LOG-004 and is ignored by
+  SEC-001 (not in its action set); an `audit_global_rate_limited`
+  entry passes LOG-004. A service run whose snapshot already
+  contains an `audit_global` entry must not flag it (regression for
+  §10.5).
 - **Negative fixture** (rule passes): the same shape in a clean
   state, expecting a PASS finding — including the boundary values
   (79% of cap passes CREDIT-002; exactly 80% warns; `credits_used
@@ -797,13 +924,20 @@ For every rule in §6, at least two fixtures:
   must yield WARN, never FAIL.
 - LOG-003: rows inserted with out-of-order `ts` (clock skew) must
   yield WARN, never FAIL.
-- CREDIT-005: a refund whose matching `refused` execution belongs
-  to a *different* agent with a close timestamp must NOT match
-  (agent-scoped matching), and an ambiguous match must yield WARN
-  with the caveat in the finding, never a confident FAIL.
+- CREDIT-005 (LTP-038 correction F): a refund whose matching
+  `refused` execution belongs to a *different* agent with a close
+  timestamp must NOT match (agent-scoped matching) → WARN (no
+  candidate). A refund with exactly one candidate row yields WARN
+  stating the association is approximate — never "reconciled". A
+  refund with several candidate rows yields UNVERIFIED
+  (ambiguity). No fixture may assert a refund was reconciled from
+  time proximity alone.
 - KEY-002: a key created 181 days ago must warn; a key created 179
   days ago must pass; the policy value (`key_max_age_days`) must
-  appear in the report so the threshold is auditable.
+  appear in the report so the threshold is auditable. All age
+  tests use the injectable clock (fixed `evaluated_at`), never the
+  real environment clock (LTP-038 correction D) — the same fixture
+  must give the same finding regardless of the date the suite runs.
 - A completely clean synthetic DB must produce all PASS except the
   structural UNVERIFIED findings (CREDIT-004, CREDIT-009, LOG-005,
   SEC-006, KEY-005, PERM-010, SEC-007) — i.e. a clean system still
@@ -818,6 +952,21 @@ For every rule in §6, at least two fixtures:
   audit-log entry for the attempt.
 - A non-admin calling `AuditService.run_global_audit` directly
   raises `PermissionError`.
+- **Service-layer authentication (LTP-038 correction 3A):** invoking
+  the service with a declared-Lucas identity but no valid raw key
+  must fail — e.g. calling the service with `raw_key=None`, or with
+  a forged key while claiming `actor="lucas"`, raises
+  `AuthenticationFailed` (or `PermissionError`), creates NO report
+  row and NO audit-log entry for the attempt. The old
+  `run_global_audit(store, actor)` signature no longer exists;
+  there is no code path that accepts a bare owner string.
+- **Rate limit (LTP-038 correction 3B):** a second global audit
+  started within the configured interval is refused at the service
+  layer (not only via the CLI), creates NO report row, and appends
+  exactly one `audit_global_rate_limited` entry. A failed audit
+  (forced exception during evaluation) does NOT block an immediate
+  re-audit: the re-audit runs and succeeds. The interval is read
+  from the latest persisted report, never from a failed attempt.
 - A global report contains no rows, ids, counts or details about
   any user other than through the aggregated `snapshot` counts —
   and the snapshot counts are admin-only output (the CLI prints the
@@ -836,9 +985,10 @@ For every rule in §6, at least two fixtures:
 The full existing suite must stay green: **88 tests** (77 pass, 11
 Windows-only skipped) — see §11.1. The Phase 3 suite adds its own
 file; it must not modify any existing test and must not weaken any
-existing assertion. The `audit_reports` table is additive; no
-existing table changes in Phase 3 (all §7 schema changes are
-proposals for later phases, explicitly NOT implemented here).
+existing assertion. The `audit_reports` table is additive, including
+its UPDATE/DELETE triggers (new table only); no existing table
+changes in Phase 3 (all §7 schema changes are proposals for later
+phases, explicitly NOT implemented here).
 
 ### 10.5 Report and CLI tests
 
@@ -850,9 +1000,13 @@ proposals for later phases, explicitly NOT implemented here).
   `ruleset_version`, `findings`, `summary`.
 - The audit's own log entry appears AFTER the audited snapshot:
   run the service, then assert the newest `audit_log` row is the
-  `audit_agent` entry with `target` = the new `report_id`, and
+  `audit_global` entry with `target` = the new `report_id`, and
   that a second run's findings do not include that entry as an
-  anomaly (LOG-004 vocabulary check must accept it).
+  anomaly (LOG-004 vocabulary check must accept `audit_global`;
+  SEC-001 must ignore it — it is not in its action set). Assert
+  the report row and the `audit_global` entry were written
+  together: no state exists with one and not the other (single
+  write transaction, §8.4 step 4).
 
 ## 11. Corrections to assumptions in LTP-035 / LTP-036
 
@@ -880,9 +1034,9 @@ every import and the CLI invocation `python -m app.cli`).
 
 ### 11.3 Naming collision: `app/auditor.py` vs `app/auditor/` (§9.2)
 
-Both cannot exist. Resolution proposed in §9.2 (move the per-agent
-Auditor to `app/agent_auditor.py`, pure move). This was not
-mentioned in LTP-036 and must be decided before implementation.
+Both cannot exist. Resolution: move the per-agent Auditor to
+`app/agent_auditor.py`, pure move (DECIDED LTP-038 §1, see §9.2
+and §13).
 
 ### 11.4 There is no credit ledger to reconcile (LTP-035, LTP-036 §1)
 
@@ -939,36 +1093,63 @@ correct flag grants nothing by itself.
 
 | # | LTP-036 criterion | How Phase 3 meets it (design) |
 |---|---|---|
-| 1 | Global audit only with authenticated admin identity | `Auth.authenticate` + `require_admin` in service and CLI (§9.3); isolation tests (§10.3) |
+| 1 | Global audit only with authenticated admin identity | Service authenticates the raw key itself (`Auth.authenticate` + `require_admin` in the service layer); CLI passes the raw key through and never resolves an owner string (§8.4, §9.3); service-auth test (§10.3) |
 | 2 | Rules without side effects | §9.1 contract; snapshot-in / finding-out; read-only proof test (§10.3) |
 | 3 | No LLM calls | Stdlib only; rules are pure functions over the snapshot |
 | 4 | No arbitrary code execution | Executor not used; no CLI path to it (unchanged) |
-| 5 | No modification of audited entities | Only writes: `audit_reports` row + one audit-log entry after the snapshot (§8.4) |
+| 5 | No modification of audited entities | Only writes: `audit_reports` row + one `audit_global` audit-log entry, in a single write transaction after the snapshot (§8.4); `audit_reports` UPDATE/DELETE triggers (§8.1) |
 | 6 | Persistence only of the report | `audit_reports` is the only new table; no schema changes to existing tables |
 | 7 | Synthetic-data tests for every finding type | §10.1 |
 | 8 | Isolation tests: common user cannot run global audit | §10.3 |
 | 9 | Tests for false positives and inconclusive cases | §10.2 |
-| 10 | Reproducible report with ruleset version | §8.3–8.4; report round-trip test (§10.5) |
+| 10 | Reproducible report with ruleset version | §8.3–8.4 (`evaluated_at` + `policy` recorded; injectable clock, fixed date in tests); report round-trip test (§10.5) |
 | 11 | Previous tests stay green | **88 tests** (77 pass + 11 Windows-only skipped) — corrected per §11.1 |
 | 12 | No public deploy | Unchanged; nothing in Phase 3 deploys anything |
 
-## 13. Open decisions for Lucas / ChatGPT (before implementation)
+### 12.1 Additional acceptance criteria from LTP-038
 
-1. **Module move vs flat layout** (§9.2): move `app/auditor.py` →
-   `app/agent_auditor.py` and create `app/auditor/`, or use flat
-   `app/audit_service.py` + `app/audit_rules.py`?
-2. **Package rename**: keep `app/` or rename to `ai_factory/`
-   as LTP-036 §2 assumed?
-3. **Key-age policy value**: default 180 days for KEY-002, or
-   another value? (Recorded in the report as
-   `policy.key_max_age_days` either way.)
-4. **Global audit cost**: 1 credit with admin bypass logged (§8.4),
-   as proposed — or free for the admin? (Consistent with the
-   per-agent audit either way; the bypass is logged in both cases.)
-5. **§7 schema changes**: approve none for Phase 3 (recommended),
-   or pull the `ledger` table (§7.1) into Phase 3 because
-   CREDIT-004 is the most valuable reconciliation? Note: pulling
-   it in changes `ResourceCore.charge`/`refund` (the hottest path
-   in the system) and needs its own review.
-6. **Report retention**: no retention policy in Phase 3 (table
-   grows by one row per audit). Accept, or set a cap now?
+| # | Criterion | Design |
+|---|---|---|
+| 13 | New `audit_global` event (never reuse `audit_agent` with `target = report_id`) | §1.3 vocabulary, §8.4 step 4, §10.5 |
+| 14 | Consistent snapshot in one SQLite read transaction; transaction closed before evaluation/persistence | §8.4 step 2 |
+| 15 | Single rule contract: every registered rule yields exactly one finding; non-applicable → UNVERIFIED with reason; `rules_run` = 38 | §6 intro, §8.2, §9.1 |
+| 16 | `evaluated_at` + applied policy in every report; tests use injectable clock / fixed date | §8.1, §8.3, §10.2 |
+| 17 | Report + `audit_global` event in one write transaction; `audit_reports` UPDATE/DELETE triggers | §8.1, §8.4 step 4 |
+| 18 | CREDIT-005 never claims exact reconciliation (no candidate → WARN; one candidate → WARN approximate; several → UNVERIFIED) | §6.2, §10.2 |
+| 19 | KEY-003 reports the count + policy; no absolute one-key requirement, no presumption of compromise | §6.4 |
+| 20 | Service-layer authenticated identity; test with declared-Lucas identity but no valid authentication must fail | §8.4, §9.3, §10.3 |
+| 21 | Configurable global-audit rate limit at the service layer; failed audits never block re-audit; refusals logged as `audit_global_rate_limited` | §0, §8.4, §10.3 |
+| 22 | Global audit free for Lucas (no credits, no fictitious charge) | §0, §8.4, §9.3 |
+
+## 13. Open decisions — RESOLVED (LTP-038 §1)
+
+All six questions from the first revision are decided. Nothing here
+remains open for implementation.
+
+| # | Question | Decision (LTP-038 §1) | Where applied |
+|---|---|---|---|
+| 1 | Module move vs flat layout (§9.2) | Move `app/auditor.py` → `app/agent_auditor.py`, pure move, imports updated, behaviour preserved | §9, §9.2 |
+| 2 | Package rename | Keep `app/`; no rename to `ai_factory` | §9, §11.2 |
+| 3 | Key-age policy value | 180 days, configurable (`policy.key_max_age_days`), documented in the report | §6.4 KEY-002, §8.1, §8.3 |
+| 4 | Global audit cost | FREE for Lucas; no credit charge, no fictitious `credit_bypass` entry; run recorded by the `audit_global` event | §0, §8.4, §9.3 |
+| 5 | §7 schema changes (ledger, security_events, hash chain, provenance, status history) | NONE for Phase 3. Ledger later (no `charge()`/`refund()` changes); `security_events` later (no denied-attempt logging); hash chain later (LOG-005 stays UNVERIFIED); provenance and status history stay out | §7, §7.6 |
+| 6 | Report retention | No automatic deletion in Phase 3; configurable rate limit guards against accidental growth | §0, §8.1, §8.4 |
+
+Additional decisions from LTP-038 §1: ruleset version `3.0.0` is
+the initial version; individual audit stays OUT of the Phase 3 MVP
+(§0).
+
+## 14. Revision history
+
+- **Rev 1 (2026-11-18, LTP-037):** initial document per LTP-036 §7.
+  38 rules; 7 NOT VERIFIABLE items; 6 open decisions (§13).
+- **Rev 2 (2026-11-18, LTP-038):** all corrections A–G and both
+  security adjustments applied; all 6 open decisions resolved;
+  ruleset version confirmed `3.0.0`; key-age policy 180 days
+  (configurable); global audit free for Lucas; configurable
+  service-layer rate limit; `audit_global` event (and
+  `audit_global_rate_limited`); single rule contract; consistent
+  snapshot in one read transaction and report + log event in one
+  write transaction; `evaluated_at` + policy in every report.
+  No code, tests or schema changes were made for this revision.
+  Implementation still requires Lucas's explicit approval.
