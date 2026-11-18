@@ -146,12 +146,14 @@ def credit_005(snapshot: dict) -> dict:
         "declared reconciled. Investigate if the pairing looks wrong.")
 
 
-def credit_006(snapshot: dict) -> dict:
-    """Admin bypass accounting: for every executions row with
-    actor = 'lucas' and agent owner != 'lucas', a credit_bypass entry
-    with the same target exists; and for every admin_execute entry a
-    credit_bypass entry with the same target exists. Shared with
-    SEC-004: one check, one finding, filed under CREDIT-006."""
+def _admin_bypass_missing(snapshot: dict) -> list[str]:
+    """Shared internal observation for CREDIT-006 and SEC-004 (see
+    docs/auditor-architecture.md §6.2/§6.5): the admin-execution /
+    credit_bypass entries that do NOT have a matching bypass entry.
+    Returns the sorted evidence ids (execution ids and '#<log id>'
+    strings). An empty list means every admin execution matches.
+    This is the observation only — each rule builds its OWN finding
+    from it (own rule_id, title, recommendation)."""
     log = snapshot["audit_log"]
     bypass_targets = {e["target"] for e in log
                       if e["action"] == "credit_bypass" and e["target"]}
@@ -169,6 +171,18 @@ def credit_006(snapshot: dict) -> dict:
         if (e["action"] == "admin_execute"
                 and e["target"] not in bypass_targets):
             missing.append(f"#{e['id']}")
+    return sorted(set(missing))
+
+
+def credit_006(snapshot: dict) -> dict:
+    """Admin bypass accounting: for every executions row with
+    actor = 'lucas' and agent owner != 'lucas', a credit_bypass entry
+    with the same target exists; and for every admin_execute entry a
+    credit_bypass entry with the same target exists. Shares the
+    internal observation with SEC-004 (the security view of the same
+    check) but produces its OWN finding — see
+    docs/auditor-architecture.md §6.5."""
+    missing = _admin_bypass_missing(snapshot)
     if missing:
         return finding("CREDIT-006", "WARN", "medium",
                        "Admin execution without a matching credit_bypass "

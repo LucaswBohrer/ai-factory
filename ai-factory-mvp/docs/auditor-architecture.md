@@ -456,15 +456,20 @@ visible to the admin.
 | SEC-001 | No successful cross-user action: no `execute_agent` / `execute_isolated` / `audit_agent` audit entry has `actor` ≠ agent owner and `actor` ≠ `"lucas"`. (Resolved by joining the entry's `target` agent id to `agents.owner`.) | None found | — | ≥ 1 found (severity `critical`; the code paths forbid this, so its presence means direct log fabrication, a bug, or a bypass of the library) |
 | SEC-002 | No `kill_switch_on` / `kill_switch_off` entry has `actor` ≠ `"lucas"`. | None found | — | ≥ 1 found (severity `critical`) |
 | SEC-003 | No `create_api_key` / `revoke_api_key` entry has `actor` ≠ `"lucas"` and `actor` ≠ `"bootstrap"`. (Bootstrap is the legitimate first-key path.) | None found | — | ≥ 1 found (severity `critical`) |
-| SEC-004 | No `admin_execute` entry without a matching `credit_bypass` entry for the same `target` (same as CREDIT-006, reported here as the security view of the same check; the two rules share one implementation and one finding id — see note below). | Matches | Mismatch (severity `medium`) | — |
+| SEC-004 | No `admin_execute` entry without a matching `credit_bypass` entry for the same `target` (same observation as CREDIT-006, reported here as the security view of the same check; the two rules share one internal observation function but each emits its OWN finding — own rule_id, title, recommendation, and evidence list; see note below). | Matches | Mismatch (severity `medium`) | — |
 | SEC-005 | Unsafe-dev runs are visible: count `execute_isolated` entries whose `detail` contains `unsafe_dev=True`. The rule produces exactly one finding per audit summarising the count (see §8.2), so the report always shows how many unisolated runs happened. | Zero runs | ≥ 1 run (severity `low`, status WARN so it is never silent) | — |
 | SEC-006 | Denied cross-user attempts in the log. | — | — | **NOT VERIFIABLE — see §7.2.** Denied attempts are never logged by design (LTP-022): the code raises before any audit call. There is nothing to count. |
 | SEC-007 | Executions by suspended/killed agents. | — | — | **NOT VERIFIABLE exactly — see §7.5.** The DB records the agent's *current* status, not its status at execution time; an agent suspended after executing is indistinguishable from one suspended before executing. |
 
-Note on SEC-004 / CREDIT-006: the same underlying check must not
-produce two findings with different ids. Implementation rule: one
-check, one finding; it is filed under CREDIT-006 and *referenced*
-from the SEC section of the summary, not duplicated.
+Note on SEC-004 / CREDIT-006 (LTP-042 blocker fix): the two rules
+share one internal observation function
+(`credits._admin_bypass_missing`), but each emits its OWN finding —
+own rule_id, title, recommendation, and evidence list. The report
+holds 38 findings with 38 distinct rule ids; no finding object is
+shared between rules. The two findings stay coherent because they
+read the same observation: both PASS when every admin execution
+matches a bypass entry, both WARN (severity `medium`, same evidence
+ids) when one does not.
 
 Note on `audit_global`: the audit's own event is excluded from
 SEC-001's action set (`execute_agent`, `execute_isolated`,
@@ -1153,3 +1158,11 @@ the initial version; individual audit stays OUT of the Phase 3 MVP
   write transaction; `evaluated_at` + policy in every report.
   No code, tests or schema changes were made for this revision.
   Implementation still requires Lucas's explicit approval.
+- **Rev 3 (2026-11-18, LTP-042 blocker fix):** SEC-004 and CREDIT-006
+  no longer share one finding object. The two rules share one
+  internal observation function (`credits._admin_bypass_missing`)
+  but each emits its OWN finding (own rule_id, title,
+  recommendation, evidence list); the report holds 38 findings with
+  38 distinct rule ids. `SHARED_FINDINGS` and the `shared_findings`
+  summary field are removed. No other rule, criterion, or scope
+  changed.

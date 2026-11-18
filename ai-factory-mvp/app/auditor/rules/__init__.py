@@ -7,11 +7,11 @@ reason — never None, never silent. rules_run always equals
 len(RULES) = 38 in Phase 3.
 
 Note on SEC-004 / CREDIT-006 (docs/auditor-architecture.md §6.5):
-one check, one finding, filed under CREDIT-006. The registry maps
-both ids to the shared implementation, so the findings list holds 38
-entries with the CREDIT-006 finding appearing at both positions;
-the summary records the alias in "shared_findings". Distinct rule
-ids in a report are therefore 37.
+the two rules share ONE internal observation function
+(credits._admin_bypass_missing) but each produces its OWN finding —
+own rule_id, title, recommendation, and evidence list. The registry
+holds 38 entries and the report holds 38 findings with 38 distinct
+rule ids (LTP-042 blocker fix).
 """
 from __future__ import annotations
 
@@ -66,23 +66,19 @@ RULES: list[tuple[str, object]] = [
 
 RULE_IDS = [rule_id for rule_id, _ in RULES]
 
-# Shared-check aliases: rule id -> the rule id whose finding it shares.
-SHARED_FINDINGS = {"SEC-004": "CREDIT-006"}
-
 
 def run_all(snapshot: dict) -> list[dict]:
     """Run every registered rule against the snapshot, in registry
     order. Returns exactly one finding per registered rule (38 in
-    Phase 3). Rules are pure functions of the snapshot: no side
-    effects, no I/O, no LLM calls."""
+    Phase 3), each with its own rule_id and its own finding object —
+    no rule shares a finding with another (LTP-042). Rules are pure
+    functions of the snapshot: no side effects, no I/O, no LLM calls."""
     findings = []
     for rule_id, fn in RULES:
         result = fn(snapshot)
         assert result is not None, f"rule {rule_id} returned None"
-        assert result["rule_id"] == rule_id or (
-            rule_id in SHARED_FINDINGS
-            and result["rule_id"] == SHARED_FINDINGS[rule_id]
-        ), (f"rule {rule_id} produced finding for "
+        assert result["rule_id"] == rule_id, (
+            f"rule {rule_id} produced finding for "
             f"{result['rule_id']!r}")
         findings.append(result)
     return findings

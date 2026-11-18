@@ -65,8 +65,7 @@ def overall_status(findings: list[dict]) -> str:
 
 
 def summarize(findings: list[dict], scope: str, evaluated_at: str,
-              policy: dict, snapshot_counts: dict,
-              shared_findings: dict | None = None) -> dict:
+              policy: dict, snapshot_counts: dict) -> dict:
     """Summary block stored on the report. counts_by_status sums over
     all findings (rules_run == len(findings) == 38 in Phase 3);
     counts_by_severity counts every finding by its severity — PASS
@@ -86,9 +85,4 @@ def summarize(findings: list[dict], scope: str, evaluated_at: str,
         "snapshot": dict(snapshot_counts),
         "disclaimer": DISCLAIMER,
     }
-    if shared_findings:
-        # Rule ids whose finding is shared with another rule's check
-        # (SEC-004 shares CREDIT-006's single finding — one check,
-        # one finding; see rules/security_events.py).
-        summary["shared_findings"] = dict(shared_findings)
     return summary

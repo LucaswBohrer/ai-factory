@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from ... import config
 from ..models import finding
-from .credits import credit_006
+from .credits import _admin_bypass_missing
 
 
 def sec_001(snapshot: dict) -> dict:
@@ -77,12 +77,27 @@ def sec_003(snapshot: dict) -> dict:
 
 
 def sec_004(snapshot: dict) -> dict:
-    """Shared check with CREDIT-006: one check, one finding, filed
-    under CREDIT-006 and referenced from the SEC section of the
-    summary — not duplicated. This function returns the CREDIT-006
-    finding itself, so the report holds one finding for the shared
-    check (see rules/__init__.py and models.summarize)."""
-    return credit_006(snapshot)
+    """Security view of the admin-bypass check (same observation as
+    CREDIT-006, docs/auditor-architecture.md §6.5): no
+    `admin_execute` entry without a matching `credit_bypass` entry
+    for the same target. Shares the internal observation function
+    with CREDIT-006 but produces its OWN finding — own rule_id,
+    title, recommendation, and evidence list. The two findings stay
+    coherent because they read the same observation."""
+    missing = _admin_bypass_missing(snapshot)
+    if missing:
+        return finding("SEC-004", "WARN", "medium",
+                       "Admin execution recorded without a matching "
+                       "credit_bypass entry",
+                       list(missing),
+                       "Investigate — an admin execution of another "
+                       "user's agent without a bypass entry means the "
+                       "bypass accounting is incomplete, or the log "
+                       "was fabricated.")
+    return finding("SEC-004", "PASS", "low",
+                   "Admin executions match their credit_bypass entries",
+                   [],
+                   "No action needed.")
 
 
 def sec_005(snapshot: dict) -> dict:

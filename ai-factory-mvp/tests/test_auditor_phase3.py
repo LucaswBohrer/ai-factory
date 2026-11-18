@@ -31,7 +31,7 @@ from app.agent_auditor import Auditor as AgentAuditor
 from app.auditor import AuditService, RateLimitRefused, run_global_audit
 from app.auditor import Auditor as AuditorCompat
 from app.auditor.models import DISCLAIMER, RULESET_VERSION
-from app.auditor.rules import RULES, run_all
+from app.auditor.rules import RULE_IDS, RULES, run_all
 from app.auth import Auth, AuthenticationFailed
 from app.cli import main as cli_main
 from app.config import ADMIN_USER
@@ -104,8 +104,8 @@ class AuditorTestCase(unittest.TestCase):
             .run_global_audit(key if key is not None else self.lucas_key)
 
     def _by_id(self, report):
-        """Findings by rule_id. CREDIT-006 appears twice (SEC-004
-        shares its finding); the dict keeps one entry for it."""
+        """Findings by rule_id. Every registered rule has its own
+        finding (LTP-042): 38 entries, 38 distinct rule ids."""
         return {f["rule_id"]: f for f in report["findings"]}
 
     def _insert_agent(self, **kw):
@@ -177,18 +177,23 @@ class TestCleanAudit(AuditorTestCase):
         unverified = {f["rule_id"] for f in report["findings"]
                       if f["status"] == "UNVERIFIED"}
         self.assertEqual(unverified, EXPECTED_UNVERIFIED_CLEAN)
-        # Every registered rule produced exactly one finding.
+        # Every registered rule produced exactly one finding, each
+        # with its own rule_id and its own finding object (LTP-042):
+        # 38 findings, 38 distinct rule ids.
         self.assertEqual(len(report["findings"]), len(RULES))
-        # SEC-004 shares CREDIT-006's single finding: 37 distinct ids.
         self.assertEqual(len({f["rule_id"] for f in report["findings"]}),
-                         37)
+                         38)
+        self.assertEqual(sorted(f["rule_id"]
+                                for f in report["findings"]),
+                         sorted(RULE_IDS))
         by_id = self._by_id(report)
         # Registry order: CREDIT-006 is index 15, SEC-004 index 34;
-        # both positions hold the same CREDIT-006 finding.
-        self.assertEqual(report["findings"][34], report["findings"][15])
-        self.assertEqual(report["findings"][34]["rule_id"], "CREDIT-006")
-        self.assertEqual(report["summary"]["shared_findings"],
-                         {"SEC-004": "CREDIT-006"})
+        # the two positions hold DISTINCT finding objects, each with
+        # its own rule_id.
+        self.assertEqual(report["findings"][15]["rule_id"], "CREDIT-006")
+        self.assertEqual(report["findings"][34]["rule_id"], "SEC-004")
+        self.assertIsNot(report["findings"][34], report["findings"][15])
+        self.assertNotIn("shared_findings", report["summary"])
         self.assertEqual(report["summary"]["disclaimer"], DISCLAIMER)
         self.assertEqual(report["summary"]["snapshot"],
                          {"users": 2, "agents": 0, "executions": 0,
@@ -226,6 +231,68 @@ class TestCleanAudit(AuditorTestCase):
         self.assertEqual(before, after)
         self.assertEqual(self.store.get_user("lucas")["credits_balance"],
                          100)
+
+
+class TestFindingIdentity(AuditorTestCase):
+    """LTP-042 blocker: each of the 38 registered rules must have
+    its OWN finding — own rule_id, own finding object, own evidence
+    context. SEC-004 and CREDIT-006 share one internal observation
+    function, never a finding object."""
+
+    def test_exactly_38_findings(self):
+        report = self._run()
+        self.assertEqual(len(report["findings"]), 38)
+        self.assertEqual(report["summary"]["rules_run"], 38)
+
+    def test_exactly_38_distinct_rule_ids(self):
+        report = self._run()
+        ids = [f["rule_id"] for f in report["findings"]]
+        self.assertEqual(len(set(ids)), 38)
+        self.assertEqual(sorted(ids), sorted(RULE_IDS))
+
+    def test_exactly_one_finding_per_registered_rule(self):
+        report = self._run()
+        ids = [f["rule_id"] for f in report["findings"]]
+        self.assertEqual(sorted(ids), sorted(RULE_IDS))
+        # Registry order is the report order.
+        self.assertEqual(ids, RULE_IDS)
+
+    def test_no_finding_object_shared_between_rules(self):
+        report = self._run()
+        findings = report["findings"]
+        self.assertEqual(len({id(f) for f in findings}), 38)
+        for i, f in enumerate(findings):
+            for j, g in enumerate(findings):
+                if i != j:
+                    self.assertIsNot(f, g)
+        # The former shared pair is now two distinct objects.
+        by_id = self._by_id(report)
+        self.assertIsNot(by_id["SEC-004"], by_id["CREDIT-006"])
+        self.assertEqual(by_id["SEC-004"]["rule_id"], "SEC-004")
+        self.assertEqual(by_id["CREDIT-006"]["rule_id"], "CREDIT-006")
+
+    def test_sec_004_and_credit_006_stay_coherent(self):
+        a = self._insert_agent()
+        self._log("alice", "create_agent", a["id"])
+        # Admin execution of alice's agent, no credit_bypass entry:
+        # both rules read the same observation -> both WARN, same
+        # evidence, but distinct finding objects.
+        self._exec_row(a["id"], actor="lucas")
+        self._log("lucas", "admin_execute", a["id"])
+        by_id = self._by_id(self._run())
+        sec = by_id["SEC-004"]
+        cred = by_id["CREDIT-006"]
+        self.assertEqual(sec["status"], "WARN")
+        self.assertEqual(cred["status"], "WARN")
+        self.assertEqual(sec["severity"], cred["severity"])
+        self.assertEqual(sec["evidence_ids"], cred["evidence_ids"])
+        self.assertIsNot(sec, cred)
+        # Add the bypass entries: the observation clears, both PASS.
+        self._log("lucas", "credit_bypass", a["id"], "admin bypass")
+        by_id = self._by_id(self._run())
+        self.assertEqual(by_id["SEC-004"]["status"], "PASS")
+        self.assertEqual(by_id["CREDIT-006"]["status"], "PASS")
+        self.assertIsNot(by_id["SEC-004"], by_id["CREDIT-006"])
 
 
 class TestPermRules(AuditorTestCase):

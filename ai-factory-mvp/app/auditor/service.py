@@ -35,7 +35,7 @@ from .. import config
 from ..auth import Auth
 from ..store import Store, _row_to_agent
 from .models import RULESET_VERSION, overall_status, summarize
-from .rules import SHARED_FINDINGS, parse_ts, run_all
+from .rules import parse_ts, run_all
 
 
 class RateLimitRefused(Exception):
@@ -160,8 +160,7 @@ class AuditService:
             "api_keys": len(snapshot["api_keys"]),
         }
         summary = summarize(findings, "global", evaluated_at, policy,
-                            snapshot_counts,
-                            shared_findings=dict(SHARED_FINDINGS))
+                            snapshot_counts)
         return {
             "report_id": uuid.uuid4().hex[:12],
             "requested_by": owner,

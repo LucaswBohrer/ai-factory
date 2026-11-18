@@ -23,9 +23,10 @@ every registered rule produces exactly one finding; non-applicable
 → UNVERIFIED with an explicit reason; `rules_run` = 38. On a clean
 synthetic DB the report is 31 PASS + 7 UNVERIFIED (CREDIT-004,
 CREDIT-009, LOG-005, SEC-006, KEY-005, PERM-010, SEC-007) — a clean
-system still reports what it *cannot* verify. SEC-004 shares
-CREDIT-006's single finding (one check, one finding; 37 distinct
-rule ids in the report).
+system still reports what it *cannot* verify. SEC-004 and CREDIT-006
+share one internal observation function but each emits its OWN
+finding (LTP-042 blocker fix) — 38 findings, 38 distinct rule ids
+in the report.
 
 ### What is PROVEN here
 
