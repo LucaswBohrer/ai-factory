@@ -136,5 +136,5 @@ Until then, arbitrary code execution stays BLOCKED.
 - Phase 2 step 1 (auth + matrix): `6bd849a` (55/55 tests)
 - Phase 2 step 2 (executor prepared + diagnostic): `cb155c4`
   (88 tests: 77 pass, 11 Windows-only skipped)
-- This closure document: published in the commit after `cb155c4`
-  (commit SHA to be recorded here on publish).
+- This closure document: published in commit `12404a8`
+  (Phase 2 closure: LTP-033 + LTP-034 + `docs/phase-2-closure.md`).
